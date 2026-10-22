@@ -1,0 +1,20 @@
+{
+  "name": "cuadra",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter @cuadra/shared build && pnpm --parallel --filter @cuadra/api --filter @cuadra/web dev",
+    "dev:api": "pnpm --filter @cuadra/api dev",
+    "dev:web": "pnpm --filter @cuadra/web dev",
+    "build": "pnpm -r build",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @cuadra/api db:generate",
+    "db:migrate": "pnpm --filter @cuadra/api db:migrate",
+    "seed:demo": "pnpm --filter @cuadra/api seed:demo",
+    "db:setup": "pnpm --filter @cuadra/shared build && pnpm db:migrate && pnpm seed:demo"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}

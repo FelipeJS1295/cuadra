@@ -1,0 +1,44 @@
+@import 'tailwindcss';
+
+/* Cuadra: cálido, claro y con mucho aire. Verde = plata que entra, ámbar = pendiente, rojo = urgente */
+@theme {
+  --color-paper: #f7f5f0;
+  --color-ink: #1d2721;
+  --color-muted: #6b7570;
+  --color-line: #e6e2d9;
+  --color-brand-50: #eef7f1;
+  --color-brand-100: #d5ecdd;
+  --color-brand-200: #a9d8bb;
+  --color-brand-500: #2f8f5b;
+  --color-brand-600: #22774a;
+  --color-brand-700: #1a5e3a;
+  --color-brand-900: #0f3a24;
+  --color-sun-50: #fff7e8;
+  --color-sun-100: #ffecc7;
+  --color-sun-500: #e0951a;
+  --color-sun-700: #a7650b;
+  --color-berry-50: #fdf0ef;
+  --color-berry-100: #f9d9d6;
+  --color-berry-500: #d24a3c;
+  --color-berry-700: #a12f24;
+  --color-sky-50: #eef5fb;
+  --color-sky-500: #3b7fc4;
+  --color-sky-700: #285e94;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --radius-xl2: 1.25rem;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Números siempre alineados */
+.num {
+  font-variant-numeric: tabular-nums;
+}
