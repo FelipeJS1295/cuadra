@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { arr, dayOf, dayRange, findDeep, http, num, pick, str, toDate } from './util.js';
-import { ProviderError, type NormalizedItem, type NormalizedOrder, type NormalizedProduct, type ProviderConfig, type RetailProvider } from './types.js';
+import { arr, dayOf, dayRange, findDeep, http, httpFile, isPdf, num, pick, str, toDate } from './util.js';
+import {
+  ProviderError,
+  type LabelOrder,
+  type LabelResult,
+  type NormalizedItem,
+  type NormalizedOrder,
+  type NormalizedProduct,
+  type ProviderConfig,
+  type RetailProvider,
+} from './types.js';
 
 /**
  * Walmart Marketplace API, mercado Chile (WM_MARKET: cl).
@@ -63,6 +72,50 @@ async function get(cfg: ProviderConfig, path: string) {
   return (json ?? {}) as Record<string, unknown>;
 }
 
+/** Números de seguimiento que vienen en la orden (por línea, en trackingInfo) */
+function trackingNumbers(o: unknown): string[] {
+  const out = new Set<string>();
+  const walk = (v: unknown, depth: number) => {
+    if (!v || typeof v !== 'object' || depth > 8) return;
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      if (/^tracking(Number|No)$/i.test(k) && x) out.add(String(x).trim());
+      else walk(x, depth + 1);
+    }
+  };
+  walk(o, 0);
+  return [...out];
+}
+
+/**
+ * Etiqueta de despacho: GET /v3/orders/label/{trackingNumber} (PDF). El número de seguimiento
+ * viene en la orden; si no, se pide a /v3/cl/shipping/labels/purchase-orders/{orden}.
+ */
+async function labels(cfg: ProviderConfig, orders: LabelOrder[]): Promise<LabelResult> {
+  const out: LabelResult = { files: [], problems: [] };
+  for (const o of orders) {
+    try {
+      let tracking = trackingNumbers(o.raw);
+      if (!tracking.length) {
+        const po = encodeURIComponent(o.externalId ?? o.orderNumber);
+        const info = await get(cfg, `/v3/cl/shipping/labels/purchase-orders/${po}`).catch(() => null);
+        tracking = trackingNumbers(info);
+      }
+      if (!tracking.length) throw new ProviderError('Walmart aún no tiene guía para esta orden (sin número de seguimiento)');
+      const t = await token(cfg);
+      for (const tn of tracking) {
+        const { data } = await httpFile(`${base(cfg)}/v3/orders/label/${encodeURIComponent(tn)}`, {
+          headers: { ...headers(cfg), 'WM_SEC.ACCESS_TOKEN': t, Accept: 'application/octet-stream' },
+        });
+        if (!isPdf(data)) throw new ProviderError(`Walmart no entregó un PDF para la guía ${tn}`);
+        out.files.push({ orderNumber: o.orderNumber, pdf: data });
+      }
+    } catch (err) {
+      out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message });
+    }
+  }
+  return out;
+}
+
 /** Reintenta cuando Walmart responde un error temporal (5xx, 429) */
 async function retry<T>(fn: () => Promise<T>, progress: (m: string) => void, tries = 4): Promise<T> {
   for (let n = 1; ; n++) {
@@ -96,7 +149,11 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
       unitPrice: qty ? product / qty : product,
       paidPrice: product,
       shippingAmount: shipping,
-      status: statuses.map((s) => str(pick(s, 'status'))).filter(Boolean).join(', ') || null,
+      status:
+        statuses
+          .map((s) => str(pick(s, 'status')))
+          .filter(Boolean)
+          .join(', ') || null,
       // Entregada: fecha del estado "Delivered" si Walmart la informa
       deliveredAt: (() => {
         const d = statuses.find((s) => /deliver/i.test(String(pick(s, 'status') ?? '')));
@@ -130,6 +187,7 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
 }
 
 export const walmart: RetailProvider = {
+  labels,
   code: 'WALMART',
   label: 'Walmart',
   howTo:

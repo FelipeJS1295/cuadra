@@ -1,5 +1,7 @@
-import { arr, dayOf, findDeep, http, num, pick, str, toDate } from './util.js';
+import { arr, dayOf, findDeep, http, httpFile, isPdf, num, pick, str, toDate } from './util.js';
 import {
+  type LabelOrder,
+  type LabelResult,
   ProviderError,
   type NormalizedItem,
   type NormalizedOrder,
@@ -99,6 +101,26 @@ async function send(cfg: ProviderConfig, method: string, path: string, body: unk
   return (json ?? {}) as Record<string, unknown>;
 }
 
+/** Etiqueta de Mercado Envíos: GET /shipment_labels?shipment_ids=…&response_type=pdf (envío listo para despachar) */
+async function labels(cfg: ProviderConfig, orders: LabelOrder[]): Promise<LabelResult> {
+  const out: LabelResult = { files: [], problems: [] };
+  for (const o of orders) {
+    try {
+      const ship = str(pick(o.raw, 'shipping.id'));
+      if (!ship) throw new ProviderError('La orden no tiene envío de Mercado Envíos');
+      const t = await token(cfg);
+      const { data } = await httpFile(`${API(cfg)}/shipment_labels?shipment_ids=${encodeURIComponent(ship)}&response_type=pdf`, {
+        headers: { Authorization: `Bearer ${t.token}` },
+      });
+      if (!isPdf(data)) throw new ProviderError('Mercado Libre no entregó un PDF (¿el envío está listo para despachar?)');
+      out.files.push({ orderNumber: o.orderNumber, pdf: data });
+    } catch (err) {
+      out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message });
+    }
+  }
+  return out;
+}
+
 /** Mercado Pago: con su Access Token propio si la empresa lo dejó; si no, con el de Mercado Libre */
 async function mpGet(cfg: ProviderConfig, path: string) {
   const mpToken = cfg.secrets.mpAccessToken?.trim() || (await token(cfg)).token;
@@ -191,7 +213,11 @@ async function normalizeOrder(cfg: ProviderConfig, o: Record<string, unknown>): 
 /** Variante o publicación -> producto de Cuadra */
 function productOf(item: Record<string, unknown>, v: Record<string, unknown> | null): NormalizedProduct | null {
   const attrSku = (src: unknown) => str(pick(arr(pick(src, 'attributes')).find((a) => String(pick(a, 'id')) === 'SELLER_SKU') ?? {}, 'value_name'));
-  const sku = (v ? (str(pick(v, 'seller_custom_field')) ?? attrSku(v)) : null) ?? str(pick(item, 'seller_custom_field')) ?? attrSku(item) ?? `${pick(item, 'id')}${v ? `-${pick(v, 'id')}` : ''}`;
+  const sku =
+    (v ? (str(pick(v, 'seller_custom_field')) ?? attrSku(v)) : null) ??
+    str(pick(item, 'seller_custom_field')) ??
+    attrSku(item) ??
+    `${pick(item, 'id')}${v ? `-${pick(v, 'id')}` : ''}`;
   const original = num(pick(item, 'original_price'));
   const price = num(pick(v ?? item, 'price')) ?? num(pick(item, 'price'));
   return {
@@ -211,6 +237,7 @@ function productOf(item: Record<string, unknown>, v: Record<string, unknown> | n
 }
 
 export const mercadolibre: RetailProvider = {
+  labels,
   code: 'MERCADOLIBRE',
   label: 'Mercado Libre',
   howTo:
@@ -229,7 +256,10 @@ export const mercadolibre: RetailProvider = {
   async test(cfg) {
     const t = await token(cfg);
     const me = await get(cfg, '/users/me');
-    return { message: `Conexión OK: vendedor ${str(pick(me, 'nickname')) ?? t.userId}`, sample: { id: pick(me, 'id'), nickname: pick(me, 'nickname'), site: pick(me, 'site_id') } };
+    return {
+      message: `Conexión OK: vendedor ${str(pick(me, 'nickname')) ?? t.userId}`,
+      sample: { id: pick(me, 'id'), nickname: pick(me, 'nickname'), site: pick(me, 'site_id') },
+    };
   },
 
   async orders(cfg, from, to, progress) {
@@ -295,7 +325,13 @@ export const mercadolibre: RetailProvider = {
           commissionPct: pct ?? null,
           paymentStatus: status,
           statementNumber: paymentId,
-          raw: { id: pick(p, 'id'), status: pick(p, 'status'), money_release_date: pick(p, 'money_release_date'), transaction_details: pick(p, 'transaction_details'), fee_details: pick(p, 'fee_details') },
+          raw: {
+            id: pick(p, 'id'),
+            status: pick(p, 'status'),
+            money_release_date: pick(p, 'money_release_date'),
+            transaction_details: pick(p, 'transaction_details'),
+            fee_details: pick(p, 'fee_details'),
+          },
         });
       };
       const product = (num(pick(p, 'transaction_amount')) ?? 0) * sign;
@@ -307,7 +343,13 @@ export const mercadolibre: RetailProvider = {
         const type = String(pick(f, 'type') ?? 'cargo');
         const amount = -(num(pick(f, 'amount')) ?? 0) * sign;
         const isShipping = /ship|envio/i.test(type);
-        line(`fee${i}`, isShipping ? 'SHIPPING' : 'COMMISSION', isShipping ? 'Envío' : `Comisión (${type})`, amount, isShipping || !product ? null : Math.round((-amount / product) * 1000) / 10);
+        line(
+          `fee${i}`,
+          isShipping ? 'SHIPPING' : 'COMMISSION',
+          isShipping ? 'Envío' : `Comisión (${type})`,
+          amount,
+          isShipping || !product ? null : Math.round((-amount / product) * 1000) / 10,
+        );
         accounted += amount;
       }
       // Retenciones y otros descuentos: lo que falta para llegar al neto que liberó Mercado Pago

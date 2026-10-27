@@ -23,6 +23,32 @@ export async function http(url: string, init: RequestInit & { timeoutMs?: number
   return { status: res.status, text, json };
 }
 
+/** Descarga un archivo (PDF de etiquetas…): devuelve los bytes y su tipo */
+export async function httpFile(url: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<{ data: Buffer; type: string }> {
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 90000) });
+  } catch (err) {
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    throw new ProviderError(`No se pudo conectar con ${new URL(url).host}: ${cause?.code ?? cause?.message ?? (err as Error).message}`);
+  }
+  const data = Buffer.from(await res.arrayBuffer());
+  if (!res.ok) {
+    const text = data.toString('utf8');
+    let json: unknown = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      /* no es JSON */
+    }
+    const msg = errorText(json) ?? text.slice(0, 300);
+    throw new ProviderError(`${new URL(url).host} respondió ${res.status}${msg ? `: ${msg}` : ''}`, res.status, text.slice(0, 2000));
+  }
+  return { data, type: res.headers.get('content-type') ?? '' };
+}
+
+export const isPdf = (b: Buffer) => b.subarray(0, 4).toString('latin1') === '%PDF';
+
 function errorText(json: unknown): string | null {
   if (!json || typeof json !== 'object') return null;
   const o = json as Record<string, unknown>;
@@ -56,7 +82,8 @@ export function pick(obj: unknown, ...paths: string[]): unknown {
   return null;
 }
 
-export const str = (v: unknown): string | null => (v === null || v === undefined || v === '' ? null : typeof v === 'object' ? JSON.stringify(v) : String(v).trim());
+export const str = (v: unknown): string | null =>
+  v === null || v === undefined || v === '' ? null : typeof v === 'object' ? JSON.stringify(v) : String(v).trim();
 
 /** "349990.00" / "349.990" / 349990 -> 349990 */
 export function num(v: unknown): number | null {

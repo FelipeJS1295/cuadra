@@ -2,6 +2,8 @@ import { createHmac } from 'node:crypto';
 import { arr, dayOf, dayRange, http, num, pick, str, toDate } from './util.js';
 import {
   ProviderError,
+  type LabelOrder,
+  type LabelResult,
   type InvoiceUpload,
   type NormalizedItem,
   type NormalizedOrder,
@@ -132,6 +134,51 @@ async function uploadInvoice(cfg: ProviderConfig, input: InvoiceUpload) {
 }
 
 /**
+ * Etiquetas de despacho (GetDocument, DocumentType=shippingParcel) con los OrderItemId vigentes
+ * de cada orden. Falabella solo la entrega si los productos están empacados: con "pack" se
+ * marcan antes (SetStatusToPackedByMarketplace, como hace el portal al imprimir).
+ */
+async function labels(cfg: ProviderConfig, orders: LabelOrder[], opts: { pack: boolean }): Promise<LabelResult> {
+  const out: LabelResult = { files: [], problems: [] };
+  for (const o of orders) {
+    try {
+      if (!o.externalId) throw new ProviderError('No está la orden traída por API: usa "Actualizar ventas"');
+      const body = await call(cfg, 'GetOrderItems', { OrderId: o.externalId });
+      const items = arr<Record<string, unknown>>(pick(body, 'SuccessResponse.Body.OrderItems.OrderItem', 'SuccessResponse.Body.OrderItems'));
+      const ids = items
+        .filter((i) => !/cancel|return|fail|devuel/i.test(String(pick(i, 'Status') ?? '')))
+        .map((i) => str(pick(i, 'OrderItemId')))
+        .filter((x): x is string => Boolean(x));
+      if (!ids.length) throw new ProviderError('No tiene productos vigentes (cancelada o devuelta)');
+      const itemIds = `[${ids.join(',')}]`;
+      const getDoc = () => call(cfg, 'GetDocument', { DocumentType: 'shippingParcel', OrderItemIds: itemIds });
+      let doc: Record<string, unknown>;
+      try {
+        doc = await getDoc();
+      } catch (err) {
+        const notPacked = /packed|empacad|código 34/i.test((err as Error).message);
+        if (!notPacked) throw err;
+        if (!opts.pack) throw new ProviderError('Falabella pide marcarla como empacada antes de entregar la etiqueta');
+        await call(cfg, 'SetStatusToPackedByMarketplace', { OrderItemIds: itemIds, DeliveryType: 'dropship' });
+        doc = await getDoc();
+      }
+      const d = (pick(doc, 'SuccessResponse.Body.Documents.Document', 'SuccessResponse.Body.Documents.0', 'SuccessResponse.Body.Document') ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const file = str(pick(d, 'File'));
+      const mime = str(pick(d, 'MimeType')) ?? '';
+      if (!file) throw new ProviderError('Falabella no entregó la etiqueta');
+      if (!/pdf/i.test(mime)) throw new ProviderError('Tu cuenta de Falabella entrega las etiquetas en ZPL (impresora Zebra). Pide a Falabella el formato PDF');
+      out.files.push({ orderNumber: o.orderNumber, pdf: Buffer.from(file, 'base64') });
+    } catch (err) {
+      out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message.replace(/^Falabella: /, '') });
+    }
+  }
+  return out;
+}
+
+/**
  * Órdenes de una respuesta. En JSON, Falabella a veces anida cada orden dentro de "Order"
  * ({ Orders: [{ Order: {...} }] }) y a veces no ({ Orders: { Order: [...] } }).
  */
@@ -195,6 +242,7 @@ export const falabella: RetailProvider = {
     'En Seller Center de Falabella: Mi cuenta → Administrar usuarios. Tu "User ID" es el correo con que entras y la API Key aparece en la columna "API Key" de tu usuario. El Seller ID está en Mi cuenta → Configuración.',
   docsUrl: 'https://developers.falabella.com/v600/reference',
   uploadInvoice,
+  labels,
 
   fields: [
     { key: 'userId', label: 'User ID (correo de Seller Center)', required: true, placeholder: 'ventas@jamaroff.cl' },
@@ -303,7 +351,11 @@ export const falabella: RetailProvider = {
     if (status === 'finished' && !errors.length && !(num(pick(d, 'FailedRecords')) ?? 0)) {
       return { status: 'APLICADO', message: 'Falabella aplicó el cambio', reference };
     }
-    return { status: 'RECHAZADO', message: `Falabella: ${errors.join(' · ') || `terminó con estado ${String(pick(d, 'Status'))}`}`, reference } satisfies UpdateResult;
+    return {
+      status: 'RECHAZADO',
+      message: `Falabella: ${errors.join(' · ') || `terminó con estado ${String(pick(d, 'Status'))}`}`,
+      reference,
+    } satisfies UpdateResult;
   },
 };
 

@@ -10,7 +10,8 @@ import { useSession } from '@/components/session';
 import { Button, Card, clp, Empty, ErrorBox, Loading, monthRange, MonthPicker, Page, Pill, dmy, Tabs, td, th, todayCL } from '@/components/ui';
 import { DispatchBoard } from '@/components/dispatch-board';
 import { FacturaLote } from '@/components/factura-lote';
-import { ParisLabels, ParisPickups } from '@/components/paris-logistics';
+import { ParisPickups } from '@/components/paris-logistics';
+import { RetailLabels } from '@/components/retail-labels';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -149,6 +150,7 @@ function Sales() {
   const [labels, setLabels] = useState(false);
   // Envíame (Paris): retiros y etiquetas
   const enviame = useQuery({ queryKey: ['enviame-status'], queryFn: api.enviameStatus, staleTime: 300_000 });
+  const labelProviders = useQuery({ queryKey: ['label-providers'], queryFn: api.labelProviders, staleTime: 300_000 });
   const [detail, setDetail] = useState<SaleRow | null>(null);
   const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -582,7 +584,7 @@ function Sales() {
       {board && <DispatchBoard onClose={() => setBoard(false)} />}
       {pickups && <ParisPickups onClose={() => setPickups(false)} />}
       {labels && (
-        <ParisLabels
+        <RetailLabels
           sales={chosen}
           onClose={() => {
             setLabels(false);
@@ -642,13 +644,13 @@ function Sales() {
                   <FileText className="size-4" /> Una factura ({chosen.length})
                 </button>
               )}
-              {/* Paris: etiquetas de Envíame en un PDF */}
-              {canEdit && enviame.data?.connected && chosen.some((s) => s.retailerCode === 'CENCOSUD') && (
+              {/* Etiquetas de despacho desde la API de cada retailer */}
+              {canEdit && (labelProviders.data?.length ?? 0) > 0 && (
                 <button
                   onClick={() => setLabels(true)}
                   className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20"
                 >
-                  <Printer className="size-4" /> Etiquetas Paris ({new Set(chosen.filter((s) => s.retailerCode === 'CENCOSUD').map((s) => s.orderNumber)).size})
+                  <Printer className="size-4" /> Etiquetas
                 </button>
               )}
               {/* Empresas de compra y venta: enviar las ventas al proveedor (si usa Cuadra) */}

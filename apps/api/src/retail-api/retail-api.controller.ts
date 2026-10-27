@@ -20,6 +20,13 @@ const pickupSchema = z.object({
   contactPhone: z.string().trim().min(8, 'Falta el teléfono de contacto').max(20),
 });
 const labelsSchema = z.object({ orders: z.array(z.string().trim().min(1)).min(1).max(100) });
+const retailLabelsSchema = z.object({
+  orders: z
+    .array(z.object({ retailerCode: z.string().min(1).max(30), orderNumber: z.string().trim().min(1).max(80) }))
+    .min(1)
+    .max(100),
+  pack: z.boolean().default(false),
+});
 
 /** Desde el 20 del mes pasado hasta hoy (igual que Ventas) */
 function defaultRange() {
@@ -46,6 +53,29 @@ function defaultRange() {
 @Controller('retail-api')
 export class RetailApiController {
   constructor(private readonly service: RetailApiService) {}
+
+  // ---------- Etiquetas de despacho desde la API de cada retailer
+  //   GET  /api/retail-api/labels/providers          retailers que las entregan
+  //   POST /api/retail-api/labels { orders, pack }   un PDF con todas (problemas en X-Labels-Problems)
+
+  @Get('labels/providers')
+  labelProviders() {
+    return this.service.labelProviders();
+  }
+
+  @Post('labels')
+  async retailLabels(@Body() body: unknown, @Res() res: Response) {
+    const { orders, pack } = validate(retailLabelsSchema, body);
+    const r = await this.service.labels(orders, pack);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="etiquetas-${new Date().toISOString().slice(0, 10)}.pdf"`);
+    res.setHeader('X-Labels-Count', String(r.count));
+    // Cabecera acotada (los servidores limitan su tamaño)
+    const problems = r.problems.slice(0, 40).map((x) => ({ ...x, message: x.message.slice(0, 160) }));
+    res.setHeader('X-Labels-Problems', encodeURIComponent(JSON.stringify(problems)));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Labels-Count, X-Labels-Problems');
+    res.send(r.pdf);
+  }
 
   // ---------- Envíame (Paris): retiros y etiquetas
   //   GET  /api/retail-api/enviame/status             ¿está conectado?

@@ -170,6 +170,24 @@ export interface RetailProvider {
    * Devuelve, por N° de orden de Ventas, los documentos encontrados (vacío = no tiene ninguno).
    */
   invoicesFor?(cfg: ProviderConfig, orders: { orderNumber: string; externalOrderId: string | null }[], progress: Progress): Promise<Map<string, string[]>>;
+  /**
+   * Etiqueta de despacho de cada orden (PDF). Lo que no se pudo, va en "problems" con el motivo.
+   * "pack": si el retailer exige marcar la orden como empacada antes (Falabella), hacerlo.
+   */
+  labels?(cfg: ProviderConfig, orders: LabelOrder[], opts: { pack: boolean }): Promise<LabelResult>;
+}
+
+export interface LabelOrder {
+  /** N° de la orden como está en Ventas */
+  orderNumber: string;
+  /** Id de la orden en el retailer */
+  externalId: string | null;
+  /** Orden completa como la entregó la API (trae seguimiento, envío…) */
+  raw: Record<string, unknown> | null;
+}
+export interface LabelResult {
+  files: { orderNumber: string; pdf: Buffer }[];
+  problems: { orderNumber: string; message: string }[];
 }
 
 export interface InvoiceUpload {

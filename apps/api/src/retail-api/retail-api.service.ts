@@ -29,6 +29,7 @@ import {
 import { decryptSecrets, encryptSecrets, mask } from '../common/secrets.js';
 import { orderToSales, retailerIdFor } from './api-to-sales.js';
 import * as enviame from './providers/enviame.js';
+import { PDFDocument } from 'pdf-lib';
 
 export interface SyncJob {
   id: string;
@@ -131,6 +132,72 @@ export class RetailApiService {
       )
       .limit(1);
     return { label: p.label, ...(await p.uploadInvoice!(await this.config(p), { ...input, externalOrderId: input.externalOrderId ?? o?.externalId ?? null })) };
+  }
+
+  // ------------------------------------------------------------------ Etiquetas de despacho
+
+  /** Retailers conectados que entregan etiquetas por API */
+  async labelProviders() {
+    const rows = await this.db.select({ provider: retailApiConnections.provider, enabled: retailApiConnections.enabled }).from(retailApiConnections);
+    return PROVIDERS.filter((p) => p.labels && rows.some((r) => r.provider === p.code && r.enabled)).map((p) => ({ code: p.code, label: p.label }));
+  }
+
+  /**
+   * Etiquetas de varias órdenes (de uno o más retailers) en un solo PDF, en el orden pedido.
+   * Lo que no se pudo vuelve en "problems" con el motivo.
+   */
+  async labels(orders: { retailerCode: string; orderNumber: string }[], pack: boolean) {
+    const problems: { retailer: string; orderNumber: string; message: string }[] = [];
+    const files = new Map<string, Buffer[]>();
+    const byProvider = new Map<string, string[]>();
+    for (const o of orders) byProvider.set(o.retailerCode, [...(byProvider.get(o.retailerCode) ?? []), o.orderNumber]);
+
+    for (const [code, nums] of byProvider) {
+      const p = providerByCode(code);
+      const r = p?.labels ? await this.row(p.code) : null;
+      if (!p?.labels || !r?.enabled) {
+        const label = p?.label ?? code;
+        for (const n of nums) problems.push({ retailer: label, orderNumber: n, message: `${label} no entrega etiquetas por API: imprímela en su portal` });
+        continue;
+      }
+      const rows = await this.db
+        .select({
+          orderNumber: retailApiOrders.orderNumber,
+          customerOrderId: retailApiOrders.customerOrderId,
+          externalId: retailApiOrders.externalId,
+          raw: retailApiOrders.raw,
+        })
+        .from(retailApiOrders)
+        .where(
+          sql`${retailApiOrders.provider} = ${p.code} and (${retailApiOrders.orderNumber} in ${nums} or ${retailApiOrders.customerOrderId} in ${nums}
+            ${p.code === 'CENCOSUD' ? sql`or ${sql.join(nums.map((n) => sql`${retailApiOrders.raw}::text like ${`%"${n.replace(/[\\%_"]/g, '')}"%`}`), sql` or `)}` : sql``})`,
+        );
+      // Paris: la orden trae varias sub-órdenes; se busca la que tiene ese número
+      const inRaw = (raw: unknown, n: string) => JSON.stringify(raw ?? '').includes(`"${n}"`);
+      const list = nums.map((n) => {
+        const row = rows.find((x) => x.orderNumber === n || x.customerOrderId === n) ?? rows.find((x) => inRaw(x.raw, n));
+        return { orderNumber: n, externalId: row?.externalId ?? null, raw: (row?.raw ?? null) as Record<string, unknown> | null };
+      });
+      const res = await p.labels(await this.config(p), list, { pack });
+      for (const f of res.files) files.set(`${code}|${f.orderNumber}`, [...(files.get(`${code}|${f.orderNumber}`) ?? []), f.pdf]);
+      for (const x of res.problems) problems.push({ retailer: p.label, ...x });
+    }
+
+    const out = await PDFDocument.create();
+    let count = 0;
+    for (const o of orders) {
+      for (const f of files.get(`${o.retailerCode}|${o.orderNumber}`) ?? []) {
+        try {
+          const doc = await PDFDocument.load(f, { ignoreEncryption: true });
+          for (const page of await out.copyPages(doc, doc.getPageIndices())) out.addPage(page);
+          count++;
+        } catch {
+          problems.push({ retailer: o.retailerCode, orderNumber: o.orderNumber, message: 'El PDF de la etiqueta vino dañado' });
+        }
+      }
+    }
+    if (!count) throw new BadRequestException(problems.map((x) => `${x.retailer} ${x.orderNumber}: ${x.message}`).join(' · ') || 'No hay etiquetas');
+    return { pdf: Buffer.from(await out.save()), count, problems };
   }
 
   // ------------------------------------------------------------------ Envíame (Paris): retiros y etiquetas

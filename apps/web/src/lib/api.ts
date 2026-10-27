@@ -1530,6 +1530,25 @@ export const api = {
     request<BoletasLote>('/sii/boletas/lote', { method: 'POST', body: JSON.stringify({ orders }) }),
   dispatchBoard: () => request<DispatchLine[]>('/sales/despachos'),
 
+  // Etiquetas de despacho desde la API de cada retailer
+  labelProviders: () => request<{ code: string; label: string }[]>('/retail-api/labels/providers'),
+  retailLabels: async (orders: { retailerCode: string; orderNumber: string }[], pack: boolean) => {
+    const res = await fetch(`${API_URL}/retail-api/labels`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orders, pack }),
+    });
+    if (!res.ok) await handle(res);
+    let problems: { retailer: string; orderNumber: string; message: string }[] = [];
+    try {
+      problems = JSON.parse(decodeURIComponent(res.headers.get('X-Labels-Problems') ?? '%5B%5D'));
+    } catch {
+      /* sin detalle */
+    }
+    return { pdf: await res.blob(), count: Number(res.headers.get('X-Labels-Count') ?? 0), problems };
+  },
+
   // Envíame (Paris): retiros y etiquetas
   enviameStatus: () => request<{ connected: boolean }>('/retail-api/enviame/status'),
   enviameSetup: () => request<EnviameSetup>('/retail-api/enviame/setup'),

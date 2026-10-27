@@ -1,5 +1,7 @@
-import { arr, dayOf, findArray, findDeep, http, num, pick, str, toDate } from './util.js';
+import { arr, dayOf, findArray, findDeep, http, httpFile, isPdf, num, pick, str, toDate } from './util.js';
 import {
+  type LabelOrder,
+  type LabelResult,
   ProviderError,
   type NormalizedItem,
   type NormalizedOrder,
@@ -115,6 +117,52 @@ async function uploadInvoice(cfg: ProviderConfig, input: InvoiceUpload) {
   return { id: str(pick(json, 'id', 'data.id')), already: false, raw: json };
 }
 
+/**
+ * Etiqueta de despacho de cada sub-orden: GET /v1/sub-orders/{labelId}/print-label (si no
+ * responde, /v2/label/print-label/{labelId}). Devuelve el enlace al PDF (Envíame/courier), que
+ * se descarga. El labelId viene en la sub-orden; si no, se prueba con su id y su número.
+ */
+async function labels(cfg: ProviderConfig, orders: LabelOrder[]): Promise<LabelResult> {
+  const out: LabelResult = { files: [], problems: [] };
+  for (const o of orders) {
+    try {
+      const subs = arr<Record<string, unknown>>(pick(o.raw, 'subOrders', 'suborders'));
+      const sub = subs.find((x) => str(pick(x, 'subOrderNumber', 'number')) === o.orderNumber) ?? subs[0] ?? null;
+      const ids = [
+        ...new Set(
+          [
+            str(pick(sub, 'labelId', 'label.id', 'shipment.labelId', 'shipping.labelId')),
+            findDeep(sub, /^labelId$/i),
+            str(pick(sub, 'id', 'subOrderId')),
+            o.orderNumber,
+          ].filter((x): x is string => Boolean(x)),
+        ),
+      ];
+      let url: string | null = null;
+      let lastError: Error | null = null;
+      for (const id of ids) {
+        for (const path of [`/v1/sub-orders/${encodeURIComponent(id)}/print-label`, `/v2/label/print-label/${encodeURIComponent(id)}`]) {
+          try {
+            const body = await get(cfg, path);
+            url = str(pick(body, 'data.0.url', 'data.0.labels', 'data.url', 'data.labels', 'url', 'labels'));
+            if (url) break;
+          } catch (err) {
+            lastError = err as Error;
+          }
+        }
+        if (url) break;
+      }
+      if (!url) throw lastError ?? new ProviderError('Paris no entregó la etiqueta');
+      const { data } = await httpFile(url);
+      if (!isPdf(data)) throw new ProviderError('El enlace de la etiqueta no es un PDF');
+      out.files.push({ orderNumber: o.orderNumber, pdf: data });
+    } catch (err) {
+      out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message });
+    }
+  }
+  return out;
+}
+
 function normalizeItem(i: Record<string, unknown>, n: number): NormalizedItem {
   const qty = num(pick(i, 'quantity', 'qty')) ?? 1;
   const paid = num(pick(i, 'priceAfterDiscounts', 'paidPrice', 'grossPrice', 'price', 'basePrice'));
@@ -213,6 +261,7 @@ export const paris: RetailProvider = {
 
   uploadInvoice,
   invoicesFor,
+  labels,
 
   async test(cfg) {
     await token(cfg);
