@@ -24,7 +24,7 @@ export default function HomePage() {
   const firstName = user.name.split(' ')[0];
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-8 lg:py-9">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:py-8">
       <header className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-line pb-5">
         <div>
           <p className="text-sm text-muted">Hola, {firstName}</p>

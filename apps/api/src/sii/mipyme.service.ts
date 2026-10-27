@@ -381,7 +381,9 @@ export class MipymeService {
           siiResponse: result.raw,
         })
         .where(eq(customerReceipts.id, receiptId));
-      return { id: receiptId, folio: result.folio, draftCode: null };
+      // Paris pide también las facturas en su portal
+      const retail = await this.sii.sendToRetailer(receiptId, { onlyIfReady: true });
+      return { id: receiptId, folio: result.folio, draftCode: null, retail };
     } catch (err) {
       const message = (err as Error).message;
       if (err instanceof SiiRejectedError || (err as { status?: number }).status === 400) {

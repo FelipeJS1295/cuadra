@@ -96,6 +96,7 @@ export function SaleDetail({
     for (const k of ['sales', 'home', 'vat']) qc.invalidateQueries({ queryKey: [k] });
   };
   const emit = useMutation({ mutationFn: () => api.emitBoleta(s.retailerCode, s.orderNumber!), onSuccess: refresh });
+  const toRetail = useMutation({ mutationFn: (id: string) => api.sendReceiptToRetailer(id), onSuccess: refresh });
   const save = useMutation({
     mutationFn: () => api.saveReceipt({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, receiptNumber: number.trim(), totalGross: String(parseAmount(total) ?? 0) }),
     onSuccess: () => {
@@ -185,7 +186,20 @@ export function SaleDetail({
               </a>
             )}
           </div>
-        ) : s.cancelled ? (
+        ) : null}
+        {s.receipt && RECEIPT_UPLOAD[s.retailerCode] && (
+          <RetailUpload
+            retailer={RECEIPT_UPLOAD[s.retailerCode]}
+            status={toRetail.data ? (toRetail.data.ok ? 'ENVIADA' : 'ERROR') : s.receipt.retailStatus}
+            message={toRetail.data?.message ?? s.receipt.retailMessage}
+            emitted={s.receipt.status === 'EMITIDA'}
+            canSend={canEdit}
+            sending={toRetail.isPending}
+            onSend={() => toRetail.mutate(s.receipt!.id)}
+            error={toRetail.error}
+          />
+        )}
+        {s.receipt ? null : s.cancelled ? (
           <p className="mt-1 text-sm text-muted">Venta cancelada: no necesita boleta.</p>
         ) : (
           <div className="mt-2 space-y-3">
@@ -208,7 +222,17 @@ export function SaleDetail({
                 </Button>
               </div>
             )}
-            {emit.isSuccess && <p className="text-sm text-money-700">Boleta N° {emit.data.folio} emitida.</p>}
+            {emit.isSuccess && (
+              <p className="text-sm text-money-700">
+                Boleta N° {emit.data.folio} emitida
+                {emit.data.retail && (emit.data.retail.ok ? ` y ${emit.data.retail.message.toLowerCase()}` : '')}.
+                {emit.data.retail && !emit.data.retail.ok && (
+                  <span className="block text-berry-700">
+                    No se pudo enviar a {emit.data.retail.retailer}: {emit.data.retail.message}. Cierra y abre la venta para reintentar.
+                  </span>
+                )}
+              </p>
+            )}
             {manual && (
               <div className="grid gap-3 sm:grid-cols-3">
                 <Field label="N° de boleta">
@@ -229,5 +253,55 @@ export function SaleDetail({
         )}
       </section>
     </Modal>
+  );
+}
+
+/** Retailers que piden la boleta en su portal y la reciben por API */
+const RECEIPT_UPLOAD: Record<string, string> = { CENCOSUD: 'Paris', FALABELLA: 'Falabella', RIPLEY: 'Ripley' };
+
+/** Estado del envío de la boleta al portal del retailer, con botón para enviar o reintentar */
+function RetailUpload({
+  retailer,
+  status,
+  message,
+  emitted,
+  canSend,
+  sending,
+  onSend,
+  error,
+}: {
+  retailer: string;
+  status: string | null;
+  message: string | null;
+  emitted: boolean;
+  canSend: boolean;
+  sending: boolean;
+  onSend: () => void;
+  error: unknown;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3 text-sm">
+      {status === 'ENVIADA' ? (
+        <span className="inline-flex items-center gap-1.5 text-money-700">
+          <CheckCircle2 className="size-4" /> {message ?? `Enviada a ${retailer}`}
+        </span>
+      ) : status === 'ERROR' ? (
+        <span className="text-berry-700">No llegó a {retailer}: {message}</span>
+      ) : status === 'FALTA' ? (
+        <span className="text-sun-700">
+          {retailer} aún no tiene esta boleta{emitted ? '.' : ': súbela en su portal (es una boleta anotada a mano, Cuadra no tiene su PDF).'}
+        </span>
+      ) : emitted ? (
+        <span className="text-muted">Aún no se envía a {retailer}.</span>
+      ) : (
+        <span className="text-muted">Anotada a mano: súbela tú al portal de {retailer} (Cuadra solo envía las que emite).</span>
+      )}
+      {canSend && emitted && status !== 'ENVIADA' && (
+        <Button size="sm" variant="secondary" className="ml-auto" onClick={onSend} loading={sending}>
+          <Send className="size-4" /> {status === 'ERROR' ? 'Reintentar' : `Enviar a ${retailer}`}
+        </Button>
+      )}
+      <ErrorBox error={error} />
+    </div>
   );
 }

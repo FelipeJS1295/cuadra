@@ -140,3 +140,29 @@ export const retailProductChanges = pgTable(
   },
   (t) => [index('retail_product_changes_sku_idx').on(t.tenantId, t.provider, t.sellerSku, t.createdAt)],
 );
+
+/**
+ * SKU padre/color y nombre propio de un producto publicado en el retail.
+ * Los retailers suelen publicar todos los colores con el mismo nombre ("Seccional Richter 3C"),
+ * pero cada color tiene su SKU (SECCRICHGO gris oscuro, SECCRICHGP gris perla). Aquí la empresa
+ * le pone a cada SKU su nombre con color, y Ventas muestra ese nombre.
+ */
+export const retailSkuNames = pgTable(
+  'retail_sku_names',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    /** Código del retailer (FALABELLA, CENCOSUD = Paris, WALMART…) */
+    provider: varchar('provider', { length: 20 }).notNull(),
+    /** SKU del vendedor en el retailer (el que viene en las ventas), en mayúsculas */
+    sellerSku: varchar('seller_sku', { length: 120 }).notNull(),
+    /** SKU padre + color propio. Ej: SEC-RICHTER-GO */
+    parentSku: varchar('parent_sku', { length: 80 }).notNull(),
+    /** Nombre que se muestra en Ventas. Ej: Seccional Richter 3C Gris Oscuro */
+    name: varchar('name', { length: 300 }).notNull(),
+    updatedBy: varchar('updated_by', { length: 200 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('retail_sku_names_uq').on(t.tenantId, t.provider, t.sellerSku), index('retail_sku_names_parent_idx').on(t.tenantId, t.parentSku)],
+);

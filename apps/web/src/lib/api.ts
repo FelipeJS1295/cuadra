@@ -64,6 +64,30 @@ export interface BoletaEmitida {
   orderNumber: string;
   /** Fecha de la boleta (AAAA-MM-DD) */
   issuedAt: string;
+  /** Envío al portal del retailer (Paris); null si el retailer no lo pide o no está conectado */
+  retail?: RetailSend | null;
+}
+
+/** Una línea por despachar (Maestra de despachos) */
+export interface DispatchLine {
+  /** Quién retira: Bluexpress, Starken, Ripley… */
+  courier: string;
+  retailerCode: string;
+  retailer: string;
+  orderNumber: string | null;
+  /** Fecha límite de despacho (AAAA-MM-DD) */
+  date: string | null;
+  product: string;
+  parentSku: string | null;
+  sku: string | null;
+  quantity: number;
+  state: string;
+}
+
+export interface RetailSend {
+  ok: boolean;
+  retailer: string;
+  message: string;
 }
 
 export interface BoletasLote {
@@ -75,6 +99,8 @@ export interface BoletasLote {
 export interface ImportRetailer {
   code: string;
   name: string;
+  /** false: la liquidación llega sola por API (no se sube archivo) */
+  upload?: boolean;
 }
 
 export interface ImportResult {
@@ -122,7 +148,11 @@ export interface SaleRow {
   /** AAAA-MM-DD */
   orderDate: string | null;
   dispatchDeadline: string | null;
+  /** Nombre propio (SKU padre/color) si se asignó; si no, el del retailer */
   productName: string | null;
+  /** Nombre como lo publica el retailer, solo si se le asignó uno propio */
+  retailName: string | null;
+  parentSku: string | null;
   /** Estado de la orden tal como lo informa el retailer */
   status: string | null;
   cancelled: boolean;
@@ -168,6 +198,9 @@ export interface SaleRow {
     draftCreditNotes: number;
     /** 39 boleta · 33 factura */
     documentType: number;
+    /** Boleta en el portal del retailer: ENVIADA (la tiene) · FALTA (no la tiene) · ERROR (falló el envío) · null (sin revisar) */
+    retailStatus: 'ENVIADA' | 'FALTA' | 'ERROR' | null;
+    retailMessage: string | null;
   } | null;
   /** Neto pagado por el retailer en la liquidación. null = aún no paga */
   settlementNet: number | null;
@@ -1021,7 +1054,7 @@ export type GuideInput = Omit<DispatchGuide, 'id' | 'transferLabel' | 'totalGros
 
 // ---------------------------------------------------------------- API Retail
 
-export type RetailProviderCode = 'FALABELLA' | 'CENCOSUD' | 'WALMART';
+export type RetailProviderCode = 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE';
 
 export interface RetailApiConnection {
   provider: RetailProviderCode;
@@ -1075,8 +1108,25 @@ export interface RetailSyncJob {
   provider: RetailProviderCode;
   kind: 'orders' | 'products';
   status: 'RUNNING' | 'DONE' | 'ERROR';
+  /** En qué va la sincronización */
+  stage?: 'CONECTANDO' | 'BUSCANDO' | 'GUARDANDO' | 'LIQUIDACION' | 'BOLETAS' | 'LISTO' | 'ERROR';
   message: string;
   count: number;
+  /** Resumen al terminar (solo órdenes) */
+  result?: {
+    from: string;
+    to: string;
+    orders: number;
+    newOrders: number;
+    inSales: number;
+    fromFile: number;
+    settled: number;
+    amount: number;
+    cancelled: number;
+    byState: Record<string, number>;
+    /** Boletas revisadas en el retailer (Paris, Ripley) */
+    receipts?: { checked: number; inRetail: number; missing: number; error: string | null };
+  };
   startedAt: string;
   finishedAt: string | null;
 }
@@ -1139,6 +1189,16 @@ export interface RetailApiProduct {
   saleFrom: string | null;
   saleTo: string | null;
   lastChange: { status: RetailChangeStatus; message: string | null; at: string } | null;
+  /** SKU padre/color y nombre propio asignados (se muestran en Ventas) */
+  parentSku: string | null;
+  ownName: string | null;
+}
+
+export interface RetailSkuName {
+  provider: RetailProviderCode;
+  sellerSku: string;
+  parentSku: string;
+  name: string;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1275,6 +1335,11 @@ export const api = {
   retailOrders: (from: string, to: string, provider?: string) =>
     request<RetailApiOrder[]>(`/retail-api/orders?from=${from}&to=${to}${provider ? `&provider=${provider}` : ''}`),
   retailOrderRaw: (id: string) => request<unknown>(`/retail-api/orders/${id}/raw`),
+  retailSkuNames: () => request<RetailSkuName[]>('/retail-api/sku-names'),
+  setRetailSkuName: (provider: RetailProviderCode, input: { sellerSku: string; parentSku: string; name: string }) =>
+    request<{ sellerSku: string; parentSku: string; name: string }>(`/retail-api/${provider}/sku-names`, { method: 'PUT', body: JSON.stringify(input) }),
+  removeRetailSkuName: (provider: RetailProviderCode, sellerSku: string) =>
+    request<{ ok: boolean }>(`/retail-api/${provider}/sku-names/${encodeURIComponent(sellerSku)}`, { method: 'DELETE' }),
   retailProducts: (provider?: string) => request<RetailApiProduct[]>(`/retail-api/products${provider ? `?provider=${provider}` : ''}`),
   updateRetailProduct: (provider: RetailProviderCode, sellerSku: string, changes: RetailProductChanges) =>
     request<{ id: string; status: RetailChangeStatus; message: string }>(`/retail-api/${provider}/products/update`, {
@@ -1292,7 +1357,7 @@ export const api = {
       `/sii/mipyme/facturas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
     ),
   createFactura: (data: { retailerCode: string; orderNumber: string; receptor: FacturaReceptor }) =>
-    request<{ id: string; draftCode: string | null; folio?: number }>('/sii/mipyme/facturas', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ id: string; draftCode: string | null; folio?: number; retail?: RetailSend | null }>('/sii/mipyme/facturas', { method: 'POST', body: JSON.stringify(data) }),
   deleteFactura: (id: string) => request<{ deleted: boolean; portal: string }>(`/sii/mipyme/facturas/${id}`, { method: 'DELETE' }),
   salesCheck: (month: string) => request<SalesCheck>(`/sii/mipyme/ventas/${month}`),
   creditNotePdfUrl: (id: string) => `${API_URL}/sii/mipyme/notas-credito/${id}/pdf`,
@@ -1319,6 +1384,14 @@ export const api = {
     request<BoletaEmitida>('/sii/boletas', { method: 'POST', body: JSON.stringify({ retailerCode, orderNumber }) }),
   emitBoletas: (orders: { retailerCode: string; orderNumber: string }[]) =>
     request<BoletasLote>('/sii/boletas/lote', { method: 'POST', body: JSON.stringify({ orders }) }),
+  dispatchBoard: () => request<DispatchLine[]>('/sales/despachos'),
+  /** Sube al portal del retailer (Paris) una boleta o factura emitida */
+  sendReceiptToRetailer: (receiptId: string) => request<RetailSend>(`/sii/boletas/${receiptId}/enviar-retail`, { method: 'POST' }),
+  sendPendingReceipts: (retailerCode: string) =>
+    request<{ sent: number; failed: number; results: (RetailSend & { orderNumber: string })[] }>('/sii/boletas/enviar-retail-pendientes', {
+      method: 'POST',
+      body: JSON.stringify({ retailerCode }),
+    }),
   /** PDF de una boleta emitida (se abre en otra pestaña con la cookie de sesión) */
   /** Nombre del PDF (sin .pdf): Falabella "<N° orden>_<N° boleta>", resto "<N° orden>" */
   boletaFileName: (sale: SaleRow, receiptNumber?: string | number | null) => {

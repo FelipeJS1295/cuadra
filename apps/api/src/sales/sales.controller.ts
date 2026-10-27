@@ -61,6 +61,12 @@ export class SalesController {
   }
 
   /** Datos del cliente de una orden, para hacer la boleta o factura en el SII */
+  /** Maestra de despachos: lo que hay que despachar, por quién lo retira y fecha límite */
+  @Get('despachos')
+  dispatchBoard() {
+    return this.sales.dispatchBoard();
+  }
+
   @Get('customer')
   customer(@Query('retailer') retailer?: string, @Query('order') order?: string) {
     if (!retailer || !order) throw new BadRequestException('Faltan el retailer y la orden');

@@ -92,7 +92,7 @@ export class ApiGatewayClient {
     const cfg = await this.config();
     if (c.provider !== 'APIGATEWAY') {
       throw new ServiceUnavailableException(
-        `Esto funciona solo con API Gateway y tu empresa se conecta al SII con ${PROVIDER_NAMES[c.provider]} (Conexiones → SII)`,
+        `Esto funciona solo con API Gateway y tu empresa se conecta al SII con ${PROVIDER_NAMES[c.provider]} (Configuración → SII)`,
       );
     }
     if (!cfg.enabled) {

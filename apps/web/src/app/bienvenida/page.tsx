@@ -76,7 +76,7 @@ export default function WelcomePage() {
                   {s.id === 'ventas' && (
                     <div className="flex flex-wrap gap-3">
                       <Button onClick={() => setUpload('ventas')}>Subir reporte de ventas</Button>
-                      <LinkButton href="/conexiones" variant="secondary">
+                      <LinkButton href="/configuracion?tab=conexiones" variant="secondary">
                         Conectar por API
                       </LinkButton>
                     </div>

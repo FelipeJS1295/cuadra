@@ -3,6 +3,8 @@
 export interface ProviderConfig {
   settings: Record<string, string>;
   secrets: Record<string, string>;
+  /** Guarda una clave nueva (ej: Mercado Libre entrega un refresh token nuevo en cada renovación) */
+  saveSecret?: (key: string, value: string) => Promise<void>;
 }
 
 export interface FieldDef {
@@ -36,6 +38,9 @@ export interface NormalizedItem {
   subOrderNumber?: string | null;
   /** Cuándo recibió el cliente el producto (si el retailer lo informa) */
   deliveredAt?: Date | null;
+  /** Fecha de entrega al courier de esta línea (Paris: la de su sub-orden), AAAA-MM-DD */
+  dispatchDeadline?: string | null;
+  carrier?: string | null;
   raw: unknown;
 }
 
@@ -44,6 +49,13 @@ export interface NormalizedOrder {
   orderNumber: string | null;
   customerOrderId: string | null;
   orderDate: Date | null;
+  /**
+   * Fecha en que hay que entregarle el producto al retailer / courier (AAAA-MM-DD).
+   * La usa la Maestra de despachos.
+   */
+  dispatchDeadline?: string | null;
+  /** Quién retira, si el retailer lo informa (Paris: "STARKEN") */
+  carrier?: string | null;
   status: string | null;
   customerName: string | null;
   customerRut: string | null;
@@ -106,10 +118,31 @@ export interface UpdateResult {
   reference?: string | null;
 }
 
+/** Un movimiento de la liquidación informado por la API (pago, comisión, envío…) */
+export interface NormalizedSettlement {
+  /** Clave única del movimiento en el retailer */
+  lineKey: string;
+  orderNumber: string | null;
+  /** Id de la línea de la venta (para cruzar por línea) */
+  saleItemId?: string | null;
+  sellerSku?: string | null;
+  productName?: string | null;
+  kind: 'PRODUCT_PAYMENT' | 'COMMISSION' | 'SHIPPING' | 'LOGISTICS' | 'PENALTY' | 'OTHER';
+  transactionType: string | null;
+  /** AAAA-MM-DD */
+  transactionDate: string | null;
+  /** Con IVA. Positivo = te pagan, negativo = te cobran */
+  amountGross: number;
+  commissionPct?: number | null;
+  paymentStatus?: string | null;
+  statementNumber?: string | null;
+  raw: unknown;
+}
+
 export type Progress = (message: string) => void;
 
 export interface RetailProvider {
-  code: 'FALABELLA' | 'CENCOSUD' | 'WALMART';
+  code: 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE';
   label: string;
   /** Dónde conseguir las credenciales (se muestra en Conexión) */
   howTo: string;
@@ -125,6 +158,33 @@ export interface RetailProvider {
   updateProduct?(cfg: ProviderConfig, target: UpdateTarget, changes: ProductChanges): Promise<UpdateResult>;
   /** Cómo terminó un cambio que quedó EN_PROCESO */
   checkUpdate?(cfg: ProviderConfig, reference: string): Promise<UpdateResult>;
+  /**
+   * Liquidación por API: lo que el retailer pagó o descontó por cada orden.
+   * Recibe las órdenes recién traídas (algunos retailers informan el pago por orden).
+   */
+  settlements?(cfg: ProviderConfig, from: string, to: string, progress: Progress, orders: NormalizedOrder[]): Promise<NormalizedSettlement[]>;
+  /** Sube la boleta o factura de una orden al portal del retailer (Paris lo exige) */
+  uploadInvoice?(cfg: ProviderConfig, input: InvoiceUpload): Promise<{ id: string | null; already: boolean; raw: unknown }>;
+  /**
+   * Qué boletas/facturas tiene ya el retailer en cada orden (para saber si falta alguna).
+   * Devuelve, por N° de orden de Ventas, los documentos encontrados (vacío = no tiene ninguno).
+   */
+  invoicesFor?(cfg: ProviderConfig, orders: { orderNumber: string; externalOrderId: string | null }[], progress: Progress): Promise<Map<string, string[]>>;
+}
+
+export interface InvoiceUpload {
+  /** N° de la orden tal como está en Ventas (Paris: la sub-orden) */
+  orderNumber: string;
+  /** Folio de la boleta o factura */
+  number: string;
+  type: 'boleta' | 'factura';
+  /** Fecha de emisión (AAAA-MM-DD) */
+  issuedAt: string;
+  /** Id interno de la orden en el retailer (Falabella: OrderId), si se conoce */
+  externalOrderId: string | null;
+  pdf: Buffer;
+  fileName: string;
+  description: string;
 }
 
 export class ProviderError extends Error {

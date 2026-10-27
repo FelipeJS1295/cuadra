@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { arr, dayRange, findDeep, http, num, pick, str, toDate } from './util.js';
+import { arr, dayOf, dayRange, findDeep, http, num, pick, str, toDate } from './util.js';
 import { ProviderError, type NormalizedItem, type NormalizedOrder, type NormalizedProduct, type ProviderConfig, type RetailProvider } from './types.js';
 
 /**
@@ -112,6 +112,7 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
     orderNumber: str(pick(o, 'purchaseOrderId')),
     customerOrderId: str(pick(o, 'customerOrderId')),
     orderDate: toDate(pick(o, 'orderDate')),
+    dispatchDeadline: dayOf(pick(o, 'shippingInfo.estimatedShipDate', 'orderLines.orderLine.0.fulfillment.shipDateTime')),
     status: [...new Set(items.map((i) => i.status).filter(Boolean))].join(', ') || null,
     customerName: str(pick(o, 'shippingInfo.postalAddress.name')),
     // Chile: el RUT puede venir en distintos campos según la versión de la API

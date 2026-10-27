@@ -64,7 +64,7 @@ export class NuboxClient {
     const s = await this.settings.sii();
     const missing = this.settings.siiMissing({ ...s, provider: 'NUBOX' });
     if (missing.length) {
-      throw new ServiceUnavailableException(`La conexión con Nubox no está configurada. Falta: ${missing.join(', ')} (Conexiones → SII)`);
+      throw new ServiceUnavailableException(`La conexión con Nubox no está configurada. Falta: ${missing.join(', ')} (Configuración → SII)`);
     }
     return { url: `${s.nuboxUrl}/v1`, token: s.nuboxToken!, apiKey: s.nuboxApiKey! };
   }

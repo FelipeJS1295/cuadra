@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { RetailApiModule } from '../retail-api/retail-api.module.js';
 import { SalesModule } from '../sales/sales.module.js';
 import { SettlementsModule } from '../settlements/settlements.module.js';
 import { GuidesService } from './guides.service.js';
@@ -20,7 +21,7 @@ import { SimpleApiClient } from './providers/simpleapi.client.js';
 
 @Module({
   // Los datos del cliente y los montos de la orden salen de Ventas
-  imports: [SalesModule, SettlementsModule],
+  imports: [SalesModule, SettlementsModule, RetailApiModule],
   controllers: [SiiController, CreditNotesController, PurchasesImportController, MipymeController],
   providers: [SiiService, ApiGatewayClient, SimpleApiClient, NuboxClient, NuboxClassicClient, SiiPortalClient, SiiProviderService, CreditNotesService, PurchasesImportService, MipymeService, GuidesService, PurchaseDocsService],
   exports: [CreditNotesService, ApiGatewayClient, SiiProviderService],

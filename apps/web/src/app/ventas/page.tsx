@@ -1,70 +1,189 @@
-'use client';
+"use client";
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Send, ShoppingBag, Upload } from 'lucide-react';
-import { useSearchParams } from 'next/navigation';
-import { Suspense, useMemo, useState } from 'react';
-import { BulkDialog, SelectionBar, type BulkKind } from '@/components/bulk-actions';
-import { SaleDetail } from '@/components/sale-detail';
-import { useSession } from '@/components/session';
-import { Button, Card, clp, Empty, ErrorBox, Loading, monthRange, MonthPicker, Page, Pill, dmy, Tabs, td, th, todayCL } from '@/components/ui';
-import { UploadDialog } from '@/components/upload';
-import { ORDER_STATE_INFO, ORDER_STATES, type OrderState } from '@cuadra/shared';
-import { api, type SaleRow } from '@/lib/api';
-import { cn } from '@/lib/cn';
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  CloudUpload,
+  RefreshCw,
+  Search,
+  Send,
+  ShoppingBag,
+  Truck,
+  Upload,
+} from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
+import {
+  BulkDialog,
+  SelectionBar,
+  type BulkKind,
+} from "@/components/bulk-actions";
+import { SaleDetail } from "@/components/sale-detail";
+import { useSession } from "@/components/session";
+import {
+  Button,
+  Card,
+  clp,
+  Empty,
+  ErrorBox,
+  Loading,
+  monthRange,
+  MonthPicker,
+  Page,
+  Pill,
+  dmy,
+  Tabs,
+  td,
+  th,
+  todayCL,
+} from "@/components/ui";
+import { DispatchBoard } from "@/components/dispatch-board";
+import { SyncDialog } from "@/components/sync-dialog";
+import { UploadDialog } from "@/components/upload";
+import {
+  ORDER_STATE_INFO,
+  ORDER_STATES,
+  type OrderState,
+} from "@cuadra/shared";
+import { api, type SaleRow } from "@/lib/api";
+import { cn } from "@/lib/cn";
 
-type Filter = 'todas' | 'sin-boleta' | 'sin-pago' | 'sin-factura' | 'sin-costo' | 'listas' | 'canceladas';
+type Filter =
+  | "todas"
+  | "sin-boleta"
+  | "falta-retail"
+  | "sin-pago"
+  | "sin-factura"
+  | "sin-costo"
+  | "listas"
+  | "canceladas";
 
-const FILTERS: { id: Filter; label: string; match: (s: SaleRow) => boolean }[] = [
-  { id: 'todas', label: 'Todas', match: () => true },
-  { id: 'sin-boleta', label: 'Sin boleta', match: (s) => !s.cancelled && !s.receipt },
-  { id: 'sin-pago', label: 'Esperando pago', match: (s) => !s.cancelled && s.settlementNet === null },
-  { id: 'sin-factura', label: 'Sin factura proveedor', match: (s) => !s.cancelled && s.supplierGross === null },
-  { id: 'sin-costo', label: 'Sin costo', match: (s) => !s.cancelled && s.cost === null },
-  { id: 'listas', label: 'Listas', match: (s) => s.total !== null },
-  { id: 'canceladas', label: 'Canceladas', match: (s) => s.cancelled },
-];
+const FILTERS: { id: Filter; label: string; match: (s: SaleRow) => boolean }[] =
+  [
+    { id: "todas", label: "Todas", match: () => true },
+    {
+      id: "sin-boleta",
+      label: "Sin boleta",
+      match: (s) => !s.cancelled && !s.receipt,
+    },
+    // El retailer (Paris, Falabella, Ripley) aún no tiene la boleta, o falló el envío
+    {
+      id: "falta-retail",
+      label: "Falta en retail",
+      match: (s) =>
+        !s.cancelled &&
+        (s.receipt?.retailStatus === "FALTA" ||
+          s.receipt?.retailStatus === "ERROR"),
+    },
+    {
+      id: "sin-pago",
+      label: "Esperando pago",
+      match: (s) => !s.cancelled && s.settlementNet === null,
+    },
+    {
+      id: "sin-factura",
+      label: "Sin factura proveedor",
+      match: (s) => !s.cancelled && s.supplierGross === null,
+    },
+    {
+      id: "sin-costo",
+      label: "Sin costo",
+      match: (s) => !s.cancelled && s.cost === null,
+    },
+    { id: "listas", label: "Listas", match: (s) => s.total !== null },
+    { id: "canceladas", label: "Canceladas", match: (s) => s.cancelled },
+  ];
 
 /** Celdas más angostas: la tabla de ventas tiene muchas columnas */
-const thc = th.replace('px-4', 'px-3');
-const tdc = td.replace('px-4', 'px-3');
+const thc = th.replace("px-4", "px-3");
+const tdc = td.replace("px-4", "px-3");
 
 const Dash = () => <span className="text-stone-300">—</span>;
 
 /** Monto; si es estimado, con "≈" y más suave */
 function Amount({ value, estimated }: { value: number; estimated?: boolean }) {
   return (
-    <p className={cn(estimated && 'text-ink/70')} title={estimated ? 'Estimado: aún falta la liquidación o la factura del proveedor' : undefined}>
-      {estimated && '≈ '}
+    <p
+      className={cn(estimated && "text-ink/70")}
+      title={
+        estimated
+          ? "Estimado: aún falta la liquidación o la factura del proveedor"
+          : undefined
+      }
+    >
+      {estimated && "≈ "}
       {clp(value)}
     </p>
   );
 }
 
-const sumOf = (rows: SaleRow[], f: (s: SaleRow) => number | null) => rows.reduce((n, s) => n + (f(s) ?? 0), 0);
+/** Retailers que reciben las boletas por API */
+const RECEIPT_UPLOAD = ["CENCOSUD", "FALABELLA", "RIPLEY"];
+
+/** Nombre corto del retailer (sin "· Fulfillment") */
+const retailerShort = (s: SaleRow) => s.retailer.split(" · ")[0];
+
+const sumOf = (rows: SaleRow[], f: (s: SaleRow) => number | null) =>
+  rows.reduce((n, s) => n + (f(s) ?? 0), 0);
 
 /** Boleta o factura de la venta: la emitida, o la que falta */
 function DocumentCell({ s }: { s: SaleRow }) {
   const r = s.receipt;
   if (r) {
-    const kind = r.documentType === 33 ? 'Factura' : 'Boleta';
-    const draft = r.status === 'BORRADOR' || r.status === 'EMITIENDO' || r.status === 'REVISAR';
+    const kind = r.documentType === 33 ? "Factura" : "Boleta";
+    const draft =
+      r.status === "BORRADOR" ||
+      r.status === "EMITIENDO" ||
+      r.status === "REVISAR";
     return (
       <>
         <p className="font-medium">
-          {kind} {draft ? '' : `N° ${r.number}`}
+          {kind} {draft ? "" : `N° ${r.number}`}
         </p>
-        <p className={cn('text-xs', draft ? 'text-sun-700' : 'text-muted')}>
-          {r.status === 'BORRADOR' ? 'borrador por firmar' : r.status === 'REVISAR' ? 'revisar en el SII' : r.status === 'EMITIENDO' ? 'emitiendo…' : r.creditNotes > 0 ? 'con nota de crédito' : r.status === 'EMITIDA' ? 'emitida' : 'anotada'}
+        <p className={cn("text-xs", draft ? "text-sun-700" : "text-muted")}>
+          {r.status === "BORRADOR"
+            ? "borrador por firmar"
+            : r.status === "REVISAR"
+              ? "revisar en el SII"
+              : r.status === "EMITIENDO"
+                ? "emitiendo…"
+                : r.creditNotes > 0
+                  ? "con nota de crédito"
+                  : r.status === "EMITIDA"
+                    ? "emitida"
+                    : "anotada"}
+          {r.retailStatus === "ENVIADA" && (
+            <span className="text-money-700"> · en {retailerShort(s)} ✓</span>
+          )}
         </p>
+        {r.retailStatus === "ERROR" && (
+          <p
+            className="text-xs text-berry-700"
+            title={r.retailMessage ?? undefined}
+          >
+            no llegó a {retailerShort(s)}
+          </p>
+        )}
+        {r.retailStatus === "FALTA" && (
+          <p
+            className="text-xs text-sun-700"
+            title={r.retailMessage ?? undefined}
+          >
+            {retailerShort(s)} aún no la tiene
+          </p>
+        )}
       </>
     );
   }
-  if (s.cancelled) return <span className="text-xs text-muted">No necesita</span>;
+  if (s.cancelled)
+    return <span className="text-xs text-muted">No necesita</span>;
   return (
     <>
-      <Pill tone="rojo">Falta {s.documentRequested === 'FACTURA' ? 'factura' : 'boleta'}</Pill>
-      {s.documentRequested === 'FACTURA' && <p className="mt-1 text-xs text-muted">el cliente pidió factura</p>}
+      <Pill tone="rojo">
+        Falta {s.documentRequested === "FACTURA" ? "factura" : "boleta"}
+      </Pill>
+      {s.documentRequested === "FACTURA" && (
+        <p className="mt-1 text-xs text-muted">el cliente pidió factura</p>
+      )}
     </>
   );
 }
@@ -82,30 +201,137 @@ function Sales() {
   const { canEdit, isFactory } = useSession();
   const qc = useQueryClient();
   const [month, setMonth] = useState(todayCL().slice(0, 7));
-  const [filter, setFilter] = useState<Filter>((params.get('filtro') as Filter) ?? 'todas');
-  const [search, setSearch] = useState('');
-  const [retailer, setRetailer] = useState(params.get('retailer') ?? '');
-  const [stateFilter, setStateFilter] = useState<OrderState | ''>('');
+  const [filter, setFilter] = useState<Filter>(
+    (params.get("filtro") as Filter) ?? "todas",
+  );
+  const [search, setSearch] = useState("");
+  const [retailer, setRetailer] = useState(params.get("retailer") ?? "");
+  const [stateFilter, setStateFilter] = useState<OrderState | "">("");
   const [upload, setUpload] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [board, setBoard] = useState(false);
   const [detail, setDetail] = useState<SaleRow | null>(null);
-  const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(null);
+  const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(
+    null,
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const range = monthRange(month);
-  const sales = useQuery({ queryKey: ['sales', range.from, range.to], queryFn: () => api.listSales(range.from, range.to) });
-  const sii = useQuery({ queryKey: ['sii-status'], queryFn: api.siiStatus, staleTime: 300_000 });
+  const sales = useQuery({
+    queryKey: ["sales", range.from, range.to],
+    queryFn: () => api.listSales(range.from, range.to),
+  });
+  const sii = useQuery({
+    queryKey: ["sii-status"],
+    queryFn: api.siiStatus,
+    staleTime: 300_000,
+  });
   const everything = sales.data ?? [];
-  const retailerOptions = useMemo(() => [...new Map(everything.map((s) => [s.retailerCode, s.retailer.split(' · ')[0]])).entries()], [everything]);
+  const retailerOptions = useMemo(
+    () => [
+      ...new Map(
+        everything.map((s) => [s.retailerCode, s.retailer.split(" · ")[0]]),
+      ).entries(),
+    ],
+    [everything],
+  );
   const all = useMemo(
-    () => everything.filter((s) => (!retailer || s.retailerCode === retailer) && (!stateFilter || s.state === stateFilter)),
+    () =>
+      everything.filter(
+        (s) =>
+          (!retailer || s.retailerCode === retailer) &&
+          (!stateFilter || s.state === stateFilter),
+      ),
     [everything, retailer, stateFilter],
   );
-  const stateOptions = useMemo(() => ORDER_STATES.filter((st) => everything.some((s) => s.state === st)), [everything]);
+  const stateOptions = useMemo(
+    () => ORDER_STATES.filter((st) => everything.some((s) => s.state === st)),
+    [everything],
+  );
   const rows = useMemo(() => {
     const f = FILTERS.find((x) => x.id === filter)!;
     const q = search.trim().toLowerCase();
-    return all.filter((s) => f.match(s) && (!q || [s.orderLabel, s.orderNumber, s.productName, s.retailer].some((v) => v?.toLowerCase().includes(q))));
+    return all.filter(
+      (s) =>
+        f.match(s) &&
+        (!q ||
+          [
+            s.orderLabel,
+            s.orderNumber,
+            s.productName,
+            s.retailName,
+            s.parentSku,
+            s.retailer,
+          ].some((v) => v?.toLowerCase().includes(q))),
+    );
   }, [all, filter, search]);
-  const withoutReceipt = all.filter((s) => !s.cancelled && !s.receipt && s.orderNumber && s.documentRequested === 'BOLETA');
+  const withoutReceipt = all.filter(
+    (s) =>
+      !s.cancelled &&
+      !s.receipt &&
+      s.orderNumber &&
+      s.documentRequested === "BOLETA",
+  );
+  // Paris y Falabella piden la boleta en su portal: las emitidas desde Cuadra que aún no les llegan
+  const conns = useQuery({
+    queryKey: ["retail-connections"],
+    queryFn: api.retailConnections,
+    enabled: canEdit,
+    staleTime: 300_000,
+  });
+  const uploadPending = (conns.data ?? [])
+    .filter(
+      (c) => RECEIPT_UPLOAD.includes(c.provider) && c.enabled && c.configured,
+    )
+    .map((c) => ({
+      code: c.provider,
+      label: c.label,
+      count: everything.filter(
+        (s) =>
+          s.retailerCode === c.provider &&
+          !s.retailer.includes("Fulfillment") &&
+          s.receipt?.status === "EMITIDA" &&
+          s.receipt.retailStatus !== "ENVIADA",
+      ).length,
+    }))
+    .filter((x) => x.count > 0);
+  const pendingTotal = uploadPending.reduce((n, r) => n + r.count, 0);
+  // Se envían retailer por retailer; el resultado junta todo
+  const sendRetail = useMutation({
+    mutationFn: async () => {
+      let sent = 0;
+      let failed = 0;
+      const results: {
+        orderNumber: string;
+        ok: boolean;
+        message: string;
+        retailer: string;
+      }[] = [];
+      for (const r of uploadPending) {
+        try {
+          const res = await api.sendPendingReceipts(r.code);
+          sent += res.sent;
+          failed += res.failed;
+          results.push(...res.results);
+        } catch (err) {
+          failed += r.count;
+          results.push({
+            orderNumber: r.label,
+            ok: false,
+            message: (err as Error).message,
+            retailer: r.label,
+          });
+        }
+      }
+      return {
+        sent,
+        failed,
+        results,
+        label:
+          uploadPending.length === 1 ? uploadPending[0].label : "los retailers",
+      };
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["sales"] }),
+  });
   const chosen = everything.filter((s) => selected.has(s.key));
   const allShown = rows.length > 0 && rows.every((s) => selected.has(s.key));
   const toggle = (key: string) =>
@@ -133,27 +359,97 @@ function Sales() {
       help={
         <>
           <p>
-            Una venta está <b>lista</b> cuando tiene boleta, el retailer ya te pagó (viene en su liquidación) y{' '}
-            {isFactory ? 'tiene su costo de fabricación (receta de insumos).' : 'tienes la factura del proveedor.'}
+            Una venta está <b>lista</b> cuando tiene boleta, el retailer ya te
+            pagó (viene en su liquidación) y{" "}
+            {isFactory
+              ? "tiene su costo de fabricación (receta de insumos)."
+              : "tienes la factura del proveedor."}
           </p>
-          <p>Con eso Cuadra calcula cuánto ganaste en esa venta. Haz clic en cualquier venta para verla paso a paso.</p>
+          <p>
+            Con eso Cuadra calcula cuánto ganaste en esa venta. Haz clic en
+            cualquier venta para verla paso a paso.
+          </p>
         </>
       }
       actions={
-        canEdit && (
-          <>
-            <Button variant="secondary" onClick={() => setUpload(true)}>
-              <Upload className="size-4" /> Subir ventas
-            </Button>
-            {sii.data?.can.boletas && withoutReceipt.length > 0 && (
-              <Button onClick={() => setBulk({ kind: 'boletas', sales: withoutReceipt })}>
-                <Send className="size-4" /> Emitir {withoutReceipt.length} boletas
+        <>
+          <Button variant="secondary" onClick={() => setBoard(true)}>
+            <Truck className="size-4" /> Maestra de despachos
+          </Button>
+          {canEdit && (
+            <>
+              <Button variant="secondary" onClick={() => setUpload(true)}>
+                <Upload className="size-4" /> Subir ventas
               </Button>
-            )}
-          </>
-        )
+              <Button variant="secondary" onClick={() => setSyncing(true)}>
+                <RefreshCw className="size-4" /> Actualizar ventas
+              </Button>
+              {pendingTotal > 0 && (
+                <Button
+                  variant="secondary"
+                  onClick={() => sendRetail.mutate()}
+                  loading={sendRetail.isPending}
+                  title={uploadPending
+                    .map((r) => `${r.label}: ${r.count}`)
+                    .join(" · ")}
+                >
+                  <CloudUpload className="size-4" /> Enviar {pendingTotal}{" "}
+                  {pendingTotal === 1 ? "boleta" : "boletas"} a{" "}
+                  {uploadPending.length === 1
+                    ? uploadPending[0].label
+                    : "retailers"}
+                </Button>
+              )}
+              {sii.data?.can.boletas && withoutReceipt.length > 0 && (
+                <Button
+                  onClick={() =>
+                    setBulk({ kind: "boletas", sales: withoutReceipt })
+                  }
+                >
+                  <Send className="size-4" /> Emitir {withoutReceipt.length}{" "}
+                  boletas
+                </Button>
+              )}
+            </>
+          )}
+        </>
       }
     >
+      {(sendRetail.data || sendRetail.error) && (
+        <div
+          className={cn(
+            "mb-4 rounded-xl border px-4 py-3 text-sm",
+            sendRetail.error || sendRetail.data?.failed
+              ? "border-berry-100 bg-berry-50 text-berry-700"
+              : "border-money-100 bg-money-50 text-money-700",
+          )}
+        >
+          {sendRetail.error ? (
+            (sendRetail.error as Error).message
+          ) : (
+            <>
+              {sendRetail.data!.sent}{" "}
+              {sendRetail.data!.sent === 1
+                ? "boleta enviada"
+                : "boletas enviadas"}{" "}
+              a {sendRetail.data!.label}
+              {sendRetail.data!.failed > 0 &&
+                ` · ${sendRetail.data!.failed} no se pudieron enviar:`}
+              {sendRetail
+                .data!.results.filter((r) => !r.ok)
+                .slice(0, 5)
+                .map((r) => (
+                  <span
+                    key={`${r.retailer}-${r.orderNumber}`}
+                    className="block text-xs"
+                  >
+                    {r.retailer} {r.orderNumber}: {r.message}
+                  </span>
+                ))}
+            </>
+          )}
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <MonthPicker
           value={month}
@@ -173,17 +469,20 @@ function Sales() {
               {name}
             </option>
           ))}
-          {retailer && !retailerOptions.some(([code]) => code === retailer) && <option value={retailer}>{retailer}</option>}
+          {retailer && !retailerOptions.some(([code]) => code === retailer) && (
+            <option value={retailer}>{retailer}</option>
+          )}
         </select>
         <select
           value={stateFilter}
-          onChange={(e) => setStateFilter(e.target.value as OrderState | '')}
+          onChange={(e) => setStateFilter(e.target.value as OrderState | "")}
           className="rounded-xl border border-line bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"
         >
           <option value="">Todos los estados</option>
           {stateOptions.map((st) => (
             <option key={st} value={st}>
-              {ORDER_STATE_INFO[st].label} ({everything.filter((s) => s.state === st).length})
+              {ORDER_STATE_INFO[st].label} (
+              {everything.filter((s) => s.state === st).length})
             </option>
           ))}
         </select>
@@ -201,7 +500,19 @@ function Sales() {
         <Tabs
           value={filter}
           onChange={setFilter}
-          items={FILTERS.filter((f) => !(isFactory && f.id === 'sin-factura')).map((f) => ({ id: f.id, label: f.label, count: all.filter(f.match).length }))}
+          items={FILTERS.filter(
+            (f) =>
+              !(isFactory && f.id === "sin-factura") &&
+              !(
+                f.id === "falta-retail" &&
+                filter !== f.id &&
+                !all.some(f.match)
+              ),
+          ).map((f) => ({
+            id: f.id,
+            label: f.label,
+            count: all.filter(f.match).length,
+          }))}
         />
       </div>
 
@@ -213,19 +524,32 @@ function Sales() {
           <Empty
             icon={<ShoppingBag className="size-6" />}
             title="No hay ventas en este mes"
-            text="Sube el reporte de órdenes de tus retailers, o conéctalos por API en Conexiones para que lleguen solas."
-            action={canEdit && <Button onClick={() => setUpload(true)}>Subir ventas</Button>}
+            text="Sube el reporte de órdenes de tus retailers, o conéctalos por API en Configuración → Conexiones para que lleguen solas."
+            action={
+              canEdit && (
+                <Button onClick={() => setUpload(true)}>Subir ventas</Button>
+              )
+            }
           />
         ) : rows.length === 0 ? (
-          <Empty title="Nada por aquí" text="Ninguna venta calza con este filtro." />
+          <Empty
+            title="Nada por aquí"
+            text="Ninguna venta calza con este filtro."
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1240px] text-sm">
               <thead className="border-b border-line">
                 <tr>
                   {canEdit && (
-                    <th className={cn(thc, 'w-10 pr-0')}>
-                      <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Elegir todas" className="size-4 accent-brand-600" />
+                    <th className={cn(thc, "w-10 pr-0")}>
+                      <input
+                        type="checkbox"
+                        checked={allShown}
+                        onChange={toggleAll}
+                        aria-label="Elegir todas"
+                        className="size-4 accent-brand-600"
+                      />
                     </th>
                   )}
                   <th className={thc}>Fecha</th>
@@ -233,19 +557,38 @@ function Sales() {
                   <th className={thc}>OC</th>
                   <th className={thc}>Producto</th>
                   <th className={thc}>Estado</th>
-                  <th className={cn(thc, 'text-right whitespace-nowrap')} title="Lo que pagó el cliente: producto + envío, con IVA">
+                  <th
+                    className={cn(thc, "text-right whitespace-nowrap")}
+                    title="Lo que pagó el cliente: producto + envío, con IVA"
+                  >
                     Venta + envío
                   </th>
-                  <th className={cn(thc, 'text-right')} title={isFactory ? 'Costo de los insumos, con IVA' : 'Lo que le pagas al proveedor, con IVA'}>
+                  <th
+                    className={cn(thc, "text-right")}
+                    title={
+                      isFactory
+                        ? "Costo de los insumos, con IVA"
+                        : "Lo que le pagas al proveedor, con IVA"
+                    }
+                  >
                     Costo
                   </th>
-                  <th className={cn(thc, 'text-right whitespace-nowrap')} title="IVA de la venta − IVA del costo − IVA de la liquidación">
+                  <th
+                    className={cn(thc, "text-right whitespace-nowrap")}
+                    title="IVA de la venta − IVA del costo − IVA de la liquidación"
+                  >
                     IVA a pagar
                   </th>
-                  <th className={cn(thc, 'text-right')} title="Lo que se queda el retailer: comisión, envío y otros cobros">
+                  <th
+                    className={cn(thc, "text-right")}
+                    title="Lo que se queda el retailer: comisión, envío y otros cobros"
+                  >
                     Liquidación
                   </th>
-                  <th className={cn(thc, 'text-right')} title="Venta − costo − IVA − liquidación">
+                  <th
+                    className={cn(thc, "text-right")}
+                    title="Venta − costo − IVA − liquidación"
+                  >
                     Utilidad
                   </th>
                   <th className={thc}>Documento</th>
@@ -258,81 +601,178 @@ function Sales() {
                     <tr
                       key={s.key}
                       onClick={() => setDetail(s)}
-                      className={cn('cursor-pointer align-top hover:bg-stone-50', s.cancelled && 'opacity-60', selected.has(s.key) && 'bg-brand-50/60 hover:bg-brand-50')}
+                      className={cn(
+                        "cursor-pointer align-top hover:bg-stone-50",
+                        s.cancelled && "opacity-60",
+                        selected.has(s.key) &&
+                          "bg-brand-50/60 hover:bg-brand-50",
+                      )}
                     >
                       {canEdit && (
-                        <td className={cn(tdc, 'w-10 pr-0')} onClick={(e) => e.stopPropagation()}>
-                          <input type="checkbox" checked={selected.has(s.key)} onChange={() => toggle(s.key)} aria-label="Elegir venta" className="size-4 accent-brand-600" />
+                        <td
+                          className={cn(tdc, "w-10 pr-0")}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(s.key)}
+                            onChange={() => toggle(s.key)}
+                            aria-label="Elegir venta"
+                            className="size-4 accent-brand-600"
+                          />
                         </td>
                       )}
-                      <td className={cn(tdc, 'num whitespace-nowrap text-muted')}>{dmy(s.orderDate)}</td>
-                      <td className={cn(tdc, 'whitespace-nowrap font-medium')}>{s.retailer}</td>
-                      <td className={cn(tdc, 'whitespace-nowrap')}>
+                      <td
+                        className={cn(tdc, "num whitespace-nowrap text-muted")}
+                      >
+                        {dmy(s.orderDate)}
+                      </td>
+                      <td className={cn(tdc, "whitespace-nowrap font-medium")}>
+                        {s.retailer}
+                      </td>
+                      <td className={cn(tdc, "whitespace-nowrap")}>
                         <p className="num">{s.orderLabel ?? s.orderNumber}</p>
-                        {s.source === 'API' && (
-                          <span title="Llegó sola por la conexión con el retailer" className="rounded-full bg-sky-50 px-1.5 py-px text-[10px] font-semibold text-sky-700">
+                        {s.source === "API" && (
+                          <span
+                            title="Llegó sola por la conexión con el retailer"
+                            className="rounded-full bg-sky-50 px-1.5 py-px text-[10px] font-semibold text-sky-700"
+                          >
                             API
                           </span>
                         )}
                       </td>
-                      <td className={cn(tdc, 'min-w-40 max-w-60')}>
-                        <p className="line-clamp-2" title={s.productName ?? undefined}>
-                          {s.productName ?? 'Producto'}
+                      <td className={cn(tdc, "min-w-40 max-w-60")}>
+                        <p
+                          className="line-clamp-2"
+                          title={
+                            s.retailName
+                              ? `En ${s.retailer}: ${s.retailName}`
+                              : (s.productName ?? undefined)
+                          }
+                        >
+                          {s.productName ?? "Producto"}
                         </p>
+                        {s.parentSku && (
+                          <p className="mt-0.5 truncate text-xs text-muted">
+                            {s.parentSku}
+                          </p>
+                        )}
                       </td>
-                      <td className={cn(tdc, 'whitespace-nowrap')}>
-                        <span title={s.statusRaw ? `${st.help}. Retailer: ${s.statusRaw}` : st.help}>
-                          <Pill tone={st.tone}>{s.state === 'OTRO' && s.statusRaw ? s.statusRaw : st.label}</Pill>
+                      <td className={cn(tdc, "whitespace-nowrap")}>
+                        <span
+                          title={
+                            s.statusRaw
+                              ? `${st.help}. Retailer: ${s.statusRaw}`
+                              : st.help
+                          }
+                        >
+                          <Pill tone={st.tone}>
+                            {s.state === "OTRO" && s.statusRaw
+                              ? s.statusRaw
+                              : st.label}
+                          </Pill>
                         </span>
                       </td>
-                      <td className={cn(tdc, 'num text-right whitespace-nowrap')}>
-                        <p className={cn(s.cancelled && 'line-through')}>{clp(s.cancelled ? s.salePrice : s.saleTotal)}</p>
-                        {s.shippingPrice > 0 && <p className="text-xs text-muted">envío {clp(s.shippingPrice)}</p>}
+                      <td
+                        className={cn(tdc, "num text-right whitespace-nowrap")}
+                      >
+                        <p className={cn(s.cancelled && "line-through")}>
+                          {clp(s.cancelled ? s.salePrice : s.saleTotal)}
+                        </p>
+                        {s.shippingPrice > 0 && (
+                          <p className="text-xs text-muted">
+                            envío {clp(s.shippingPrice)}
+                          </p>
+                        )}
                       </td>
-                      <td className={cn(tdc, 'num text-right whitespace-nowrap')}>
+                      <td
+                        className={cn(tdc, "num text-right whitespace-nowrap")}
+                      >
                         {s.cancelled ? (
                           <Dash />
                         ) : s.costGross !== null ? (
                           <>
-                            <Amount value={s.costGross} estimated={s.costSource === 'ESTIMADO'} />
-                            <p className="text-xs text-muted">{s.costSource === 'FACTURA' ? 'factura proveedor' : s.costSource === 'RECETA' ? 'insumos' : 'según producto'}</p>
+                            <Amount
+                              value={s.costGross}
+                              estimated={s.costSource === "ESTIMADO"}
+                            />
+                            <p className="text-xs text-muted">
+                              {s.costSource === "FACTURA"
+                                ? "factura proveedor"
+                                : s.costSource === "RECETA"
+                                  ? "insumos"
+                                  : "según producto"}
+                            </p>
                           </>
                         ) : (
-                          <span className="text-xs font-medium text-sun-700">Sin costo</span>
+                          <span className="text-xs font-medium text-sun-700">
+                            Sin costo
+                          </span>
                         )}
                       </td>
-                      <td className={cn(tdc, 'num text-right whitespace-nowrap')}>
-                        {s.cancelled || s.vatToPay === null ? <Dash /> : <Amount value={s.vatToPay} estimated={s.utilityEstimated || s.costGross === null} />}
+                      <td
+                        className={cn(tdc, "num text-right whitespace-nowrap")}
+                      >
+                        {s.cancelled || s.vatToPay === null ? (
+                          <Dash />
+                        ) : (
+                          <Amount
+                            value={s.vatToPay}
+                            estimated={
+                              s.utilityEstimated || s.costGross === null
+                            }
+                          />
+                        )}
                       </td>
-                      <td className={cn(tdc, 'num text-right whitespace-nowrap')}>
+                      <td
+                        className={cn(tdc, "num text-right whitespace-nowrap")}
+                      >
                         {s.cancelled || s.settlementCharges === null ? (
                           <Dash />
                         ) : (
                           <>
-                            <Amount value={s.settlementCharges} estimated={s.settlementEstimated} />
-                            <p className="text-xs text-muted">{s.settlementEstimated ? 'según contrato' : 'pagada'}</p>
+                            <Amount
+                              value={s.settlementCharges}
+                              estimated={s.settlementEstimated}
+                            />
+                            <p className="text-xs text-muted">
+                              {s.settlementEstimated
+                                ? "según contrato"
+                                : "pagada"}
+                            </p>
                           </>
                         )}
                       </td>
-                      <td className={cn(tdc, 'num text-right whitespace-nowrap')}>
+                      <td
+                        className={cn(tdc, "num text-right whitespace-nowrap")}
+                      >
                         {s.cancelled ? (
                           <Dash />
                         ) : s.utility !== null ? (
                           <>
-                            <p className={cn('font-semibold', s.utility >= 0 ? 'text-money-700' : 'text-berry-700')}>
-                              {s.utilityEstimated && '≈ '}
+                            <p
+                              className={cn(
+                                "font-semibold",
+                                s.utility >= 0
+                                  ? "text-money-700"
+                                  : "text-berry-700",
+                              )}
+                            >
+                              {s.utilityEstimated && "≈ "}
                               {clp(s.utility)}
                             </p>
                             <p className="text-xs text-muted">
-                              {s.saleTotal ? `${Math.round((s.utility / s.saleTotal) * 100)}%` : ''}
-                              {s.utilityEstimated ? ' · estimada' : ' · real'}
+                              {s.saleTotal
+                                ? `${Math.round((s.utility / s.saleTotal) * 100)}%`
+                                : ""}
+                              {s.utilityEstimated ? " · estimada" : " · real"}
                             </p>
                           </>
                         ) : (
                           <Dash />
                         )}
                       </td>
-                      <td className={cn(tdc, 'whitespace-nowrap')}>
+                      <td className={cn(tdc, "whitespace-nowrap")}>
                         <DocumentCell s={s} />
                       </td>
                     </tr>
@@ -341,15 +781,35 @@ function Sales() {
               </tbody>
               <tfoot className="border-t-2 border-line bg-stone-50/60 text-sm">
                 <tr>
-                  <td className={cn(tdc, 'font-medium')} colSpan={canEdit ? 6 : 5}>
-                    {rows.length} {rows.length === 1 ? 'venta' : 'ventas'}
+                  <td
+                    className={cn(tdc, "font-medium")}
+                    colSpan={canEdit ? 6 : 5}
+                  >
+                    {rows.length} {rows.length === 1 ? "venta" : "ventas"}
                   </td>
-                  <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.saleTotal)))}</td>
-                  <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.costGross)))}</td>
-                  <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.vatToPay)))}</td>
-                  <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.settlementCharges)))}</td>
-                  <td className={cn(tdc, 'num text-right font-semibold text-money-700')}>
-                    {rows.some((s) => s.utilityEstimated) && '≈ '}
+                  <td className={cn(tdc, "num text-right font-semibold")}>
+                    {clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.saleTotal)))}
+                  </td>
+                  <td className={cn(tdc, "num text-right font-semibold")}>
+                    {clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.costGross)))}
+                  </td>
+                  <td className={cn(tdc, "num text-right font-semibold")}>
+                    {clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.vatToPay)))}
+                  </td>
+                  <td className={cn(tdc, "num text-right font-semibold")}>
+                    {clp(
+                      sumOf(rows, (s) =>
+                        s.cancelled ? 0 : s.settlementCharges,
+                      ),
+                    )}
+                  </td>
+                  <td
+                    className={cn(
+                      tdc,
+                      "num text-right font-semibold text-money-700",
+                    )}
+                  >
+                    {rows.some((s) => s.utilityEstimated) && "≈ "}
                     {clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.utility)))}
                   </td>
                   <td className={tdc} />
@@ -360,10 +820,27 @@ function Sales() {
         )}
       </Card>
 
-      {upload && <UploadDialog kind="ventas" onClose={() => setUpload(false)} />}
-      {detail && <SaleDetail sale={detail} siiEnabled={Boolean(sii.data?.can.boletas)} siiConnected={Boolean(sii.data?.enabled)} siiProvider={sii.data?.providerName} onClose={() => setDetail(null)} />}
+      {upload && (
+        <UploadDialog kind="ventas" onClose={() => setUpload(false)} />
+      )}
+      {syncing && <SyncDialog onClose={() => setSyncing(false)} />}
+      {board && <DispatchBoard onClose={() => setBoard(false)} />}
+      {detail && (
+        <SaleDetail
+          sale={detail}
+          siiEnabled={Boolean(sii.data?.can.boletas)}
+          siiConnected={Boolean(sii.data?.enabled)}
+          siiProvider={sii.data?.providerName}
+          onClose={() => setDetail(null)}
+        />
+      )}
       {chosen.length > 0 && !bulk && (
-        <SelectionBar selected={chosen} sii={sii.data} onAction={(kind) => setBulk({ kind, sales: chosen })} onClear={() => setSelected(new Set())} />
+        <SelectionBar
+          selected={chosen}
+          sii={sii.data}
+          onAction={(kind) => setBulk({ kind, sales: chosen })}
+          onClear={() => setSelected(new Set())}
+        />
       )}
       {bulk && (
         <BulkDialog
@@ -373,7 +850,7 @@ function Sales() {
           onClose={() => {
             setBulk(null);
             setSelected(new Set());
-            qc.invalidateQueries({ queryKey: ['sales'] });
+            qc.invalidateQueries({ queryKey: ["sales"] });
           }}
         />
       )}

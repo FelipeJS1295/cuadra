@@ -59,6 +59,21 @@ export class SiiController {
     return this.sii.emitirVarias(orders, user?.id ?? null);
   }
 
+  /** Sube al portal del retailer (Paris) una boleta o factura ya emitida */
+  @Post('boletas/:id/enviar-retail')
+  @HttpCode(200)
+  sendToRetailer(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sii.sendToRetailer(id);
+  }
+
+  /** Sube al retailer todas las boletas emitidas que aún no tiene */
+  @Post('boletas/enviar-retail-pendientes')
+  @HttpCode(200)
+  sendPending(@Body() body: unknown) {
+    const { retailerCode } = validate(z.object({ retailerCode: z.string().min(2).max(20) }), body);
+    return this.sii.sendPendingToRetailer(retailerCode);
+  }
+
   // El nombre al final de la URL (ej: .../pdf/3257781501.pdf) es para que el navegador
   // muestre y guarde el archivo con el N° de orden de compra
   @Get(['boletas/:id/pdf', 'boletas/:id/pdf/:file'])

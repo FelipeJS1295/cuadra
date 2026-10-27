@@ -3,7 +3,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, CircleDashed, FileMinus, FileText, Loader2, Send, X, XCircle } from 'lucide-react';
 import { useState } from 'react';
-import { api, type SaleRow, type SiiStatus } from '@/lib/api';
+import { api, type RetailSend, type SaleRow, type SiiStatus } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { Button, clp, Field, inputCls, Modal } from './ui';
 
@@ -71,7 +71,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
     const s = c.sale;
     if (kind === 'boletas') {
       const r = await api.emitBoleta(s.retailerCode, s.orderNumber!);
-      return `Boleta N° ${r.folio}`;
+      return `Boleta N° ${r.folio}${retailNote(r.retail)}`;
     }
     if (kind === 'facturas') {
       const p = await api.facturaPreview(s.retailerCode, s.orderNumber!);
@@ -79,7 +79,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
       const missing = [!r.rut && 'RUT', !r.name && 'razón social', !r.activity && 'giro', !r.address && 'dirección', !r.commune && 'comuna'].filter(Boolean);
       if (missing.length) throw new Error(`Faltan datos de facturación (${missing.join(', ')}): hazla desde el detalle de la venta`);
       const res = await api.createFactura({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, receptor: r });
-      return res.folio ? `Factura N° ${res.folio}` : `Borrador N° ${res.draftCode}`;
+      return res.folio ? `Factura N° ${res.folio}${retailNote(res.retail)}` : `Borrador N° ${res.draftCode}`;
     }
     const res = await api.draftCreditNote({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, amountGross: c.amount!, refCode: 1, reason });
     return res.folio ? `Nota N° ${res.folio}` : `Borrador N° ${res.draftCode}`;
@@ -96,7 +96,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
         const message = (err as Error).message;
         set(c.sale.key, { state: 'error', message });
         // Problema de conexión o de claves: no tiene sentido seguir con las demás
-        if (/configurad|clave|token|autentic|Conexiones → SII|no puedes/i.test(message)) break;
+        if (/configurad|clave|token|autentic|Conexiones → SII|Configuración → SII|no puedes/i.test(message)) break;
       }
     }
     setRunning(false);
@@ -251,4 +251,10 @@ export function SelectionBar({
       </div>
     </div>
   );
+}
+
+/** "· enviada a Paris" o el error del retailer, cuando el retailer pide la boleta en su portal */
+function retailNote(r: RetailSend | null | undefined) {
+  if (!r) return '';
+  return r.ok ? ` · ${r.message.toLowerCase()}` : ` · no se pudo enviar a ${r.retailer}: ${r.message} (reintenta desde la venta)`;
 }

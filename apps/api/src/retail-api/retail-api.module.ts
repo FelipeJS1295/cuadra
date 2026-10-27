@@ -6,5 +6,7 @@ import { RetailApiService } from './retail-api.service.js';
 @Module({
   controllers: [RetailApiController],
   providers: [RetailApiService],
+  // Sii lo usa para subir las boletas al portal del retailer (Paris)
+  exports: [RetailApiService],
 })
 export class RetailApiModule {}

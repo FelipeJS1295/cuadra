@@ -57,6 +57,27 @@
       "when": 1792728312201,
       "tag": "0007_calendario_pagos",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793109509483,
+      "tag": "0008_sku_padre_color",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793110596387,
+      "tag": "0009_boletas_al_retail",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793113529350,
+      "tag": "0010_fecha_despacho",
+      "breakpoints": true
     }
   ]
 }

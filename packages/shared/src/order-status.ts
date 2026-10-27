@@ -34,13 +34,13 @@ export const ORDER_STATE_INFO: Record<OrderState, OrderStateInfo> = {
 
 /** Patrón de cada estado (el orden importa: "no entregada" debe ganar antes que "entregada") */
 export const ORDER_STATE_PATTERNS: [Exclude<OrderState, 'OTRO'>, string][] = [
-  ['CANCELADA', 'cancel|anulad|rechazad|void'],
+  ['CANCELADA', 'cancel|anulad|rechazad|void|refused'],
   ['DEVUELTA', 'devuel|devoluc|return|refund|reembols'],
-  ['FALLIDA', 'fallid|failed|no entregad|undeliver|siniestr|perdid|lost'],
-  ['ENTREGADA', 'entregad|delivered|finalizad|completad|complete'],
+  ['FALLIDA', 'fallid|failed|no entregad|not_delivered|not delivered|undeliver|siniestr|perdid|lost'],
+  ['ENTREGADA', 'entregad|delivered|finalizad|completad|complete|received|closed'],
   ['EN_CAMINO', 'shipped|despachad|enviad|tr[aá]nsito|transit|en camino|en ruta'],
-  ['EN_PREPARACION', 'listo|ready|acknowledg|confirmad|prepar|pack|por despachar|por enviar|picking|facturad|invoiced|handling|printed|label|etiquet'],
-  ['PENDIENTE', 'pend|creat|nuev|new|unshipped|pagad|paid|recibid|abiert|open'],
+  ['EN_PREPARACION', 'listo|ready|acknowledg|confirmad|prepar|pack|por despachar|por enviar|picking|facturad|invoiced|handling|printed|label|etiquet|shipping|to_collect'],
+  ['PENDIENTE', 'pend|creat|nuev|new|unshipped|pagad|paid|recibid|abiert|open|staging|waiting'],
 ];
 
 /** Patrón de "cancelada", para usar en SQL: coalesce(status, '') ~* CANCELLED_PATTERN */

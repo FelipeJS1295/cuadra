@@ -1,7 +1,8 @@
 import { createHmac } from 'node:crypto';
-import { arr, dayRange, http, num, pick, str, toDate } from './util.js';
+import { arr, dayOf, dayRange, http, num, pick, str, toDate } from './util.js';
 import {
   ProviderError,
+  type InvoiceUpload,
   type NormalizedItem,
   type NormalizedOrder,
   type NormalizedProduct,
@@ -51,6 +52,86 @@ async function call(cfg: ProviderConfig, action: string, params: Record<string, 
 }
 
 /**
+ * Sube la boleta o factura de una orden (SetInvoicePDF):
+ * POST /v1/marketplace-sellers/invoice/pdf, firmado en los encabezados, con el PDF en base64
+ * y los OrderItemId de la orden. Falabella solo la acepta si la orden ya está lista para
+ * despacho (ready_to_ship o después) y no es Fulfillment (ahí la boleta la hace Falabella).
+ */
+async function uploadInvoice(cfg: ProviderConfig, input: InvoiceUpload) {
+  if (!input.externalOrderId) throw new ProviderError('No se encontró la orden en Falabella: usa "Actualizar ventas" para traerla por API y vuelve a intentar');
+  const userId = cfg.settings.userId?.trim();
+  const apiKey = cfg.secrets.apiKey?.trim();
+  if (!userId || !apiKey) throw new ProviderError('Faltan el usuario (correo) y la API Key de Falabella');
+
+  // Productos de la orden que siguen vigentes (los cancelados no llevan boleta)
+  const body = await call(cfg, 'GetOrderItems', { OrderId: input.externalOrderId });
+  const items = arr<Record<string, unknown>>(pick(body, 'SuccessResponse.Body.OrderItems.OrderItem', 'SuccessResponse.Body.OrderItems'));
+  const ids = items
+    .filter((i) => !/cancel|return|fail|devuel/i.test(String(pick(i, 'Status') ?? '')))
+    .map((i) => str(pick(i, 'OrderItemId')))
+    .filter((x): x is string => Boolean(x));
+  if (!ids.length) throw new ProviderError('La orden no tiene productos vigentes en Falabella');
+
+  const headers: Record<string, string> = {
+    Action: 'SetInvoicePDF',
+    Format: 'JSON',
+    Service: 'Invoice',
+    Timestamp: isoSeconds(new Date()),
+    UserID: userId,
+    Version: '1.0',
+  };
+  const toSign = Object.keys(headers)
+    .sort()
+    .map((k) => `${enc(k)}=${enc(headers[k])}`)
+    .join('&');
+  const signature = createHmac('sha256', apiKey).update(toSign).digest('hex');
+  const base = (cfg.settings.baseUrl || 'https://sellercenter-api.falabella.com').replace(/\/+$/, '');
+  const sellerId = (cfg.settings.sellerId || 'SELLER').replace(/[^\w-]/g, '');
+  const payload = {
+    orderItemIds: ids,
+    invoiceNumber: input.number,
+    invoiceDate: input.issuedAt,
+    invoiceType: input.type === 'factura' ? 'FACTURA' : 'BOLETA',
+    operatorCode: 'FACL',
+    invoiceDocumentFormat: 'pdf',
+    invoiceDocument: input.pdf.toString('base64'),
+  };
+  const already = (m: string) => /already exists|ya existe/i.test(m);
+  try {
+    const { json } = await http(`${base}/v1/marketplace-sellers/invoice/pdf`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': `${sellerId}/Node/${process.versions.node}/PROPIA/FACL`,
+        ...headers,
+        Signature: enc(signature),
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 90000,
+    });
+    const error = str(pick(json, 'ErrorResponse.Body.Errors.0.Message', 'ErrorResponse.Body.Errors.Error.Message', 'ErrorResponse.Head.ErrorMessage'));
+    if (error) {
+      if (already(error)) return { id: null, already: true, raw: json };
+      throw new ProviderError(`Falabella: ${error}`);
+    }
+    return { id: str(pick(json, 'SuccessResponse.Head.RequestId')), already: false, raw: json };
+  } catch (err) {
+    if (!(err instanceof ProviderError)) throw err;
+    // El detalle del error viene en ErrorResponse.Body.Errors
+    let detail: string | null = null;
+    try {
+      const j = JSON.parse(err.body ?? '');
+      detail = str(pick(j, 'ErrorResponse.Body.Errors.0.Message', 'ErrorResponse.Body.Errors.Error.Message', 'ErrorResponse.Head.ErrorMessage'));
+    } catch {
+      /* sin JSON */
+    }
+    if (already(detail ?? err.message)) return { id: null, already: true, raw: null };
+    throw detail ? new ProviderError(`Falabella: ${detail}`, err.status) : err;
+  }
+}
+
+/**
  * Órdenes de una respuesta. En JSON, Falabella a veces anida cada orden dentro de "Order"
  * ({ Orders: [{ Order: {...} }] }) y a veces no ({ Orders: { Order: [...] } }).
  */
@@ -92,6 +173,7 @@ function normalizeOrder(o: Record<string, unknown>, items: NormalizedItem[]): No
     orderNumber: str(pick(o, 'OrderNumber')),
     customerOrderId: null,
     orderDate: toDate(pick(o, 'CreatedAt')),
+    dispatchDeadline: dayOf(pick(o, 'PromisedShippingTime')),
     status: statuses.join(', ') || str(pick(o, 'Status')),
     customerName: name || str(pick(o, 'AddressBilling.FirstName')),
     customerRut: str(pick(o, 'NationalRegistrationNumber', 'AddressBilling.CustomerTaxId', 'ExtraBillingAttributes.LegalId')),
@@ -112,6 +194,8 @@ export const falabella: RetailProvider = {
   howTo:
     'En Seller Center de Falabella: Mi cuenta → Administrar usuarios. Tu "User ID" es el correo con que entras y la API Key aparece en la columna "API Key" de tu usuario. El Seller ID está en Mi cuenta → Configuración.',
   docsUrl: 'https://developers.falabella.com/v600/reference',
+  uploadInvoice,
+
   fields: [
     { key: 'userId', label: 'User ID (correo de Seller Center)', required: true, placeholder: 'ventas@jamaroff.cl' },
     { key: 'apiKey', label: 'API Key', secret: true, required: true },

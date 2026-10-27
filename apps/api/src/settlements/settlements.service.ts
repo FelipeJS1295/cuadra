@@ -51,7 +51,12 @@ export class SettlementsService {
   constructor(@Inject(DRIZZLE) private readonly db: Database) {}
 
   availableRetailers() {
-    return ADAPTER_LIST.map((a) => ({ code: adapterCode(a), name: adapterName(a) }));
+    return [
+      ...ADAPTER_LIST.map((a) => ({ code: adapterCode(a), name: adapterName(a), upload: true })),
+      // Liquidación que llega sola por API (no se sube archivo)
+      { code: 'RIPLEY', name: 'Ripley', upload: false },
+      { code: 'MERCADOLIBRE', name: 'Mercado Libre', upload: false },
+    ];
   }
 
   /**

@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { CANCELLED_PATTERN, orderStateOfLines, PRICING_CHANNELS, type OrderState } from '@cuadra/shared';
+import { CANCELLED_PATTERN, orderStateOf, orderStateOfLines, PRICING_CHANNELS, type OrderState } from '@cuadra/shared';
 import { and, eq, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
 import { customerReceipts, retailers } from '../database/schema/index.js';
@@ -24,6 +24,44 @@ const LABELS: Record<string, string> = Object.fromEntries(PRICING_CHANNELS.map((
  *   IVA   = IVA de la venta (boleta) − IVA de la compra (factura proveedor)
  *           − IVA de la comisión − IVA de los cargos de envío/logística
  */
+/** Quién retira los despachos de cada retailer */
+const COURIER: Record<string, string> = {
+  WALMART: 'Bluexpress',
+  FALABELLA: 'Bluexpress',
+  HITES: 'Bluexpress',
+  CENCOSUD: 'Starken',
+  RIPLEY: 'Ripley',
+  MERCADOLIBRE: 'Mercado Envíos',
+};
+
+/**
+ * Quién retira: Paris informa el courier de cada sub-orden (STARKEN…); el resto, según el retailer.
+ */
+function courierOf(code: string, carrier: string | null) {
+  const c = (carrier ?? '').trim();
+  if (code === 'CENCOSUD' && c) {
+    if (/blue/i.test(c)) return 'Bluexpress';
+    return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
+  }
+  return COURIER[code] ?? null;
+}
+
+export interface DispatchLine {
+  /** Quién retira (Bluexpress, Starken, Ripley…) */
+  courier: string;
+  retailerCode: string;
+  retailer: string;
+  orderNumber: string | null;
+  /** Fecha límite de despacho (AAAA-MM-DD); null si el retailer no la informa */
+  date: string | null;
+  /** Nombre propio (SKU padre/color) si se asignó; si no, el del retailer */
+  product: string;
+  parentSku: string | null;
+  sku: string | null;
+  quantity: number;
+  state: OrderState;
+}
+
 export interface SaleWithMargin {
   key: string;
   /** Código del retailer en la base (para guardar la boleta) */
@@ -37,6 +75,10 @@ export interface SaleWithMargin {
   /** Cuándo recibió el cliente (si el retailer lo informa) */
   deliveredAt: string | null;
   productName: string | null;
+  /** Nombre como lo publica el retailer, cuando se le asignó un nombre propio por SKU padre/color */
+  retailName: string | null;
+  /** SKU padre/color asignado a los productos de la orden */
+  parentSku: string | null;
   status: string | null;
   cancelled: boolean;
   /** API: llegó por la conexión con el retailer · ARCHIVO: se subió el reporte */
@@ -93,6 +135,9 @@ export interface SaleWithMargin {
     creditNotes: number;
     /** Notas en borrador (falta firmarlas en el Portal MIPYME) */
     draftCreditNotes: number;
+    /** Envío al portal del retailer (Paris): ENVIADA · ERROR · null si no se ha enviado */
+    retailStatus: string | null;
+    retailMessage: string | null;
   } | null;
   /** Neto que pagó el retailer en la liquidación. null = aún no paga */
   settlementNet: number | null;
@@ -145,6 +190,9 @@ type SaleGroup = {
   dispatch_deadline: string | null;
   delivered_at: string | null;
   product_name: string | null;
+  /** Nombre como lo publica el retailer, si se le asignó un nombre propio (SKU padre/color) */
+  retail_name: string | null;
+  parent_sku: string | null;
   status: string | null;
   cancelled: boolean;
   /** La orden llegó por la API del retailer (no por archivo) */
@@ -166,6 +214,8 @@ type SaleGroup = {
   receipt_status: string | null;
   receipt_type: number | null;
   receipt_issued_at: string | null;
+  receipt_retail_status: string | null;
+  receipt_retail_message: string | null;
   nc_valid: number;
   nc_draft: number;
 };
@@ -212,7 +262,10 @@ export class SalesService {
           min(s.order_date)::text as order_date,
           min(s.dispatch_deadline)::text as dispatch_deadline,
           max(s.delivered_at)::text as delivered_at,
-          string_agg(distinct s.product_name, ' + ') as product_name,
+          -- Nombre propio del SKU (SKU padre/color) si se le asignó; si no, el del retailer
+          string_agg(distinct coalesce(sn.name, s.product_name), ' + ') as product_name,
+          case when bool_or(sn.name is not null) then string_agg(distinct s.product_name, ' + ') end as retail_name,
+          string_agg(distinct sn.parent_sku, ' + ') as parent_sku,
           string_agg(distinct s.status, ' / ') as status,
           array_agg(s.status) as statuses,
           bool_and(coalesce(s.status, '') ~* ${CANCELLED_PATTERN}) as cancelled,
@@ -235,6 +288,8 @@ export class SalesService {
           min(cr.status) as receipt_status,
           min(cr.document_type) as receipt_type,
           min(cr.issued_at)::text as receipt_issued_at,
+          min(cr.retail_status) as receipt_retail_status,
+          min(cr.retail_message) as receipt_retail_message,
           -- Notas de crédito: emitidas/anotadas (rebajan la boleta) y borradores sin firmar
           max((select coalesce(sum(n.amount_gross), 0) from credit_notes n
             where n.retailer_id = s.retailer_id and n.order_number = s.order_number
@@ -245,6 +300,7 @@ export class SalesService {
         from sales_records s
         join retailers r on r.id = s.retailer_id
         left join customer_receipts cr on cr.retailer_id = s.retailer_id and cr.order_number = s.order_number
+        left join retail_sku_names sn on sn.provider = r.code and sn.seller_sku = upper(s.seller_sku)
         -- Producto del catálogo del retailer -> producto con costo (por SKU, o por nombre si no trae SKU)
         left join lateral (
           select nullif(p.provisional_cost, 0) as cost,
@@ -354,6 +410,8 @@ export class SalesService {
         dispatchDeadline: g.dispatch_deadline,
         deliveredAt: g.delivered_at,
         productName: g.product_name,
+        retailName: g.retail_name,
+        parentSku: g.parent_sku,
         status: g.status,
         state,
         statusRaw: g.status,
@@ -384,6 +442,8 @@ export class SalesService {
                 issuedAt: g.receipt_issued_at,
                 creditNotes: Math.round(g.nc_valid ?? 0),
                 draftCreditNotes: g.nc_draft ?? 0,
+                retailStatus: g.receipt_retail_status,
+                retailMessage: g.receipt_retail_message,
               }
             : null,
         settlementNet: round(settlementNet),
@@ -400,6 +460,50 @@ export class SalesService {
         marginPct: total !== null && salePrice ? (total / salePrice) * 100 : null,
       };
     });
+  }
+
+  /**
+   * Maestra de despachos: productos por despachar (órdenes pendientes o en preparación de los
+   * últimos 90 días, sin las Fulfillment que despacha el retailer), con quién los retira y la
+   * fecha límite de despacho. Una fila por producto de cada orden.
+   */
+  async dispatchBoard(): Promise<DispatchLine[]> {
+    const { rows } = await this.db.execute<{
+      code: string;
+      name: string;
+      order_number: string | null;
+      date: string | null;
+      product: string | null;
+      parent_sku: string | null;
+      sku: string | null;
+      quantity: number;
+      status: string | null;
+      carrier: string | null;
+    }>(sql`
+      select r.code, r.name, s.order_number, s.dispatch_deadline::text as date, s.carrier,
+        coalesce(sn.name, s.product_name) as product, sn.parent_sku, s.seller_sku as sku, s.quantity, s.status
+      from sales_records s
+      join retailers r on r.id = s.retailer_id
+      left join retail_sku_names sn on sn.provider = r.code and sn.seller_sku = upper(s.seller_sku)
+      where s.order_date >= current_date - 90
+        and ${sql.raw(NOT_FULFILLMENT_SQL.replace(/fulfillment/g, 's.fulfillment'))}
+        and coalesce(s.status, '') !~* ${CANCELLED_PATTERN}
+    `);
+    return rows
+      .map((r) => ({ ...r, state: orderStateOf(r.status) }))
+      .filter((r) => r.state === 'PENDIENTE' || r.state === 'EN_PREPARACION')
+      .map((r) => ({
+        courier: courierOf(r.code, r.carrier) ?? LABELS[r.code] ?? r.name,
+        retailerCode: r.code,
+        retailer: LABELS[r.code] ?? r.name,
+        orderNumber: r.order_number,
+        date: r.date,
+        product: (r.product ?? r.sku ?? 'Producto').trim(),
+        parentSku: r.parent_sku,
+        sku: r.sku,
+        quantity: Number(r.quantity) || 1,
+        state: r.state,
+      }));
   }
 
   /**

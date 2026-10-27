@@ -35,7 +35,7 @@ export default function CollectionsPage() {
           <p>
             <b>Cuándo te pagan</b>: cada retailer paga distinto. Walmart cierra el 14 y fin de mes y paga 7 días hábiles después; Falabella
             paga 8 días hábiles después de que el cliente recibe; Paris paga los miércoles lo entregado la semana anterior. Lo ajustas en
-            Conexiones → tu retailer.
+            Configuración → Conexiones → tu retailer.
           </p>
           <p>
             Si la venta aún no se entrega, la fecha es <b>estimada</b> (≈): supone que llega a tiempo.

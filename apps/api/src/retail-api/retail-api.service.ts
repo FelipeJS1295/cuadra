@@ -1,15 +1,17 @@
-import { CANCELLED_PATTERN } from '@cuadra/shared';
+import { CANCELLED_PATTERN, orderStateOfLines } from '@cuadra/shared';
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { BASE_DB, DRIZZLE, type Database } from '../database/database.module.js';
 import { currentTenantId, runInBackground } from '../database/tenant-context.js';
-import { retailApiConnections, retailApiOrderItems, retailApiOrders, retailApiProducts, retailProductChanges } from '../database/schema/index.js';
+import { customerReceipts, retailApiConnections, retailApiOrderItems, retailApiOrders, retailApiProducts, retailProductChanges, retailSkuNames, settlementRecords } from '../database/schema/index.js';
 import { PROVIDERS, providerByCode } from './providers/index.js';
 import {
   ProviderError,
+  type InvoiceUpload,
   type NormalizedOrder,
   type NormalizedProduct,
+  type NormalizedSettlement,
   type ProductChanges,
   type ProviderConfig,
   type RetailProvider,
@@ -25,7 +27,27 @@ export interface SyncJob {
   kind: 'orders' | 'products';
   status: 'RUNNING' | 'DONE' | 'ERROR';
   message: string;
+  /** En qué va: CONECTANDO → BUSCANDO → GUARDANDO → LIQUIDACION → LISTO (para mostrar el avance) */
+  stage: 'CONECTANDO' | 'BUSCANDO' | 'GUARDANDO' | 'LIQUIDACION' | 'BOLETAS' | 'LISTO' | 'ERROR';
   count: number;
+  /** Resumen de una sincronización de órdenes */
+  result?: {
+    from: string;
+    to: string;
+    orders: number;
+    /** Órdenes que no estaban antes en Cuadra */
+    newOrders: number;
+    inSales: number;
+    fromFile: number;
+    settled: number;
+    /** Monto total de las órdenes traídas (con IVA), sin las canceladas */
+    amount: number;
+    cancelled: number;
+    /** Órdenes por estado global (PENDIENTE, EN_CAMINO, ENTREGADA…) */
+    byState: Record<string, number>;
+    /** Boletas revisadas en el retailer (solo los que permiten consultarlas: Paris, Ripley) */
+    receipts?: { checked: number; inRetail: number; missing: number; error: string | null };
+  };
   startedAt: string;
   finishedAt: string | null;
 }
@@ -58,12 +80,54 @@ export class RetailApiService {
     const r = await this.row(p.code);
     const saved = Object.entries((r?.settings ?? {}) as Record<string, string>).filter(([, v]) => v);
     const settings = { ...Object.fromEntries(p.fields.filter((f) => f.default).map((f) => [f.key, f.default!])), ...Object.fromEntries(saved) };
-    return { settings, secrets: decryptSecrets(r?.secrets ?? null) };
+    return {
+      settings,
+      secrets: decryptSecrets(r?.secrets ?? null),
+      // Para tokens que el retailer renueva (Mercado Libre): se guardan cifrados al momento
+      saveSecret: async (key, value) => {
+        const current = await this.row(p.code);
+        const secrets = decryptSecrets(current?.secrets ?? null);
+        if (value) secrets[key] = value;
+        else delete secrets[key];
+        await this.db
+          .update(retailApiConnections)
+          .set({ secrets: encryptSecrets(secrets) })
+          .where(eq(retailApiConnections.provider, p.code));
+      },
+    };
+  }
+
+  // ------------------------------------------------------------------ Boletas al retailer
+
+  /** ¿El retailer recibe boletas por API y la conexión está activa? */
+  async invoiceUploadReady(code: string) {
+    const p = providerByCode(code.toUpperCase());
+    if (!p?.uploadInvoice) return null;
+    const r = await this.row(p.code);
+    if (!r?.enabled || !r.secrets) return null;
+    return p;
+  }
+
+  /** Sube la boleta o factura de una orden al portal del retailer */
+  async uploadInvoice(code: string, input: InvoiceUpload) {
+    const p = await this.invoiceUploadReady(code);
+    if (!p) throw new BadRequestException(`${providerByCode(code)?.label ?? code} no está conectado por API para recibir boletas (Configuración → Conexiones)`);
+    // Id interno de la orden en el retailer (Falabella lo necesita para saber sus productos)
+    const [o] = await this.db
+      .select({ externalId: retailApiOrders.externalId })
+      .from(retailApiOrders)
+      .where(
+        sql`${retailApiOrders.provider} = ${p.code} and (${retailApiOrders.orderNumber} = ${input.orderNumber} or ${retailApiOrders.customerOrderId} = ${input.orderNumber})`,
+      )
+      .limit(1);
+    return { label: p.label, ...(await p.uploadInvoice!(await this.config(p), { ...input, externalOrderId: input.externalOrderId ?? o?.externalId ?? null })) };
   }
 
   // ------------------------------------------------------------------ Conexiones
 
   async connections() {
+    // Cada retailer conectable aparece en la lista aunque aún no tenga ventas
+    for (const p of PROVIDERS) await retailerIdFor(this.db, p.code, p.label);
     const rows = await this.db.select().from(retailApiConnections);
     return PROVIDERS.map((p) => {
       const r = rows.find((x) => x.provider === p.code);
@@ -173,18 +237,104 @@ export class RetailApiService {
     if ((Date.parse(to) - Date.parse(from)) / 86400000 > MAX_DAYS) throw new BadRequestException(`Máximo ${MAX_DAYS} días por sincronización`);
     return this.run(p, 'orders', async (job) => {
       const cfg = await this.config(p);
+      job.stage = 'BUSCANDO';
+      job.message = `Buscando ventas en ${p.label}…`;
       const orders = await p.orders(cfg, from, to, (m) => (job.message = m));
+      job.stage = 'GUARDANDO';
       job.message = `Guardando ${orders.length} órdenes…`;
-      const { inSales, fromFile } = await this.saveOrders(p.code, p.label, orders);
+      const { inSales, fromFile, newOrders } = await this.saveOrders(p.code, p.label, orders);
+      // Liquidación por API (Ripley, Mercado Pago): lo que pagaron o descontaron por cada orden
+      let settled = 0;
+      if (p.settlements) {
+        job.stage = 'LIQUIDACION';
+        job.message = 'Trayendo la liquidación…';
+        const moves = await p.settlements(cfg, from, to, (m) => (job.message = m), orders).catch((err) => {
+          this.logger.warn(`${p.code} liquidación: ${errMessage(err)}`);
+          job.message = `No se pudo traer la liquidación: ${errMessage(err)}`;
+          return [] as NormalizedSettlement[];
+        });
+        settled = await this.saveSettlements(p.code, p.label, moves);
+      }
+      // Boletas: ¿el retailer ya tiene la boleta de cada orden?
+      let receipts: { checked: number; inRetail: number; missing: number; error: string | null } | undefined;
+      if (p.invoicesFor) {
+        job.stage = 'BOLETAS';
+        job.message = `Revisando boletas en ${p.label}…`;
+        receipts = await this.checkReceipts(p, cfg, orders, (m) => (job.message = m)).catch((err) => {
+          this.logger.warn(`${p.code} boletas: ${errMessage(err)}`);
+          return { checked: 0, inRetail: 0, missing: 0, error: errMessage(err) };
+        });
+      }
       await this.setStatus(p.code, 'OK', null, { lastOrdersSyncAt: new Date() });
+      const byState: Record<string, number> = {};
+      let amount = 0;
+      let cancelled = 0;
+      for (const o of orders) {
+        const state = orderStateOfLines(o.items.length ? o.items.map((i) => i.status ?? o.status) : [o.status]);
+        byState[state] = (byState[state] ?? 0) + 1;
+        if (state === 'CANCELADA') cancelled++;
+        else amount += o.total ?? 0;
+      }
+      job.result = { from, to, orders: orders.length, newOrders, inSales, fromFile, settled, amount: Math.round(amount), cancelled, byState, receipts };
       return {
         count: orders.length,
         message:
           `${orders.length} ${orders.length === 1 ? 'orden' : 'órdenes'} de ${p.label} (${from} a ${to}): ` +
           `${inSales} ${inSales === 1 ? 'quedó' : 'quedaron'} en Ventas` +
-          (fromFile ? ` · ${fromFile} ya ${fromFile === 1 ? 'estaba cargada' : 'estaban cargadas'} por archivo` : ''),
+          (fromFile ? ` · ${fromFile} ya ${fromFile === 1 ? 'estaba cargada' : 'estaban cargadas'} por archivo` : '') +
+          (settled ? ` · ${settled} movimientos de liquidación` : '') +
+          (receipts?.missing ? ` · ${receipts.missing} ${receipts.missing === 1 ? 'boleta' : 'boletas'} que ${p.label} aún no tiene` : ''),
       };
     });
+  }
+
+  /**
+   * Revisa en el retailer las boletas de las órdenes recién traídas y anota en cada una si el
+   * retailer ya la tiene (ENVIADA) o no (FALTA). Considera las emitidas y las anotadas a mano.
+   */
+  private async checkReceipts(p: RetailProvider, cfg: ProviderConfig, orders: NormalizedOrder[], progress: (m: string) => void) {
+    // N° de orden de Ventas -> id interno en el retailer (Paris usa la sub-orden; Ripley el order_id)
+    const external = new Map<string, string>();
+    for (const o of orders) {
+      const nums = [o.orderNumber, o.customerOrderId, ...o.items.map((i) => i.subOrderNumber)].filter((x): x is string => Boolean(x));
+      for (const n of nums) external.set(n, o.externalId);
+    }
+    if (!external.size) return { checked: 0, inRetail: 0, missing: 0, error: null };
+    const { rows } = await this.db.execute<{ id: string; order_number: string; retail_status: string | null }>(sql`
+      select cr.id, cr.order_number, cr.retail_status
+      from customer_receipts cr join retailers r on r.id = cr.retailer_id
+      where r.code = ${p.code} and cr.status in ('EMITIDA', 'REGISTRADA')
+        and cr.order_number in (${sql.join([...external.keys()].map((n) => sql`${n}`), sql`, `)})
+    `);
+    if (!rows.length) return { checked: 0, inRetail: 0, missing: 0, error: null };
+    const found = await p.invoicesFor!(
+      cfg,
+      rows.map((r) => ({ orderNumber: r.order_number, externalOrderId: external.get(r.order_number) ?? null })),
+      progress,
+    );
+    let inRetail = 0;
+    let missing = 0;
+    for (const r of rows) {
+      const docs = found.get(r.order_number);
+      if (!docs) continue;
+      if (docs.length) {
+        inRetail++;
+        if (r.retail_status !== 'ENVIADA')
+          await this.db
+            .update(customerReceipts)
+            .set({ retailStatus: 'ENVIADA', retailMessage: `Ya está en ${p.label}`, retailSentAt: new Date() })
+            .where(eq(customerReceipts.id, r.id));
+      } else {
+        missing++;
+        // Si falló un envío se conserva el motivo; si no, queda como "falta"
+        if (r.retail_status !== 'ERROR')
+          await this.db
+            .update(customerReceipts)
+            .set({ retailStatus: 'FALTA', retailMessage: `${p.label} aún no tiene esta boleta`, retailSentAt: new Date() })
+            .where(eq(customerReceipts.id, r.id));
+      }
+    }
+    return { checked: rows.length, inRetail, missing, error: null };
   }
 
   startProducts(code: string) {
@@ -203,15 +353,26 @@ export class RetailApiService {
     const tenantId = currentTenantId()!;
     const running = [...this.jobs.values()].find((j) => j.tenantId === tenantId && j.provider === p.code && j.kind === kind && j.status === 'RUNNING');
     if (running) return running;
-    const job: SyncJob = { id: randomUUID(), tenantId, provider: p.code, kind, status: 'RUNNING', message: 'Conectando…', count: 0, startedAt: new Date().toISOString(), finishedAt: null };
+    const job: SyncJob = {
+      id: randomUUID(),
+      tenantId,
+      provider: p.code,
+      kind,
+      status: 'RUNNING',
+      stage: 'CONECTANDO',
+      message: `Conectando con ${p.label}…`,
+      count: 0,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
     this.jobs.set(job.id, job);
     // Corre fuera del pedido (que termina altiro), con su propia transacción de la empresa
     runInBackground(this.base, tenantId, () => work(job))
-      .then((r) => Object.assign(job, { status: 'DONE', count: r.count, message: r.message }))
+      .then((r) => Object.assign(job, { status: 'DONE', stage: 'LISTO', count: r.count, message: r.message }))
       .catch(async (err) => {
         const message = errMessage(err);
         this.logger.warn(`${p.code} ${kind}: ${message}`);
-        Object.assign(job, { status: 'ERROR', message });
+        Object.assign(job, { status: 'ERROR', stage: 'ERROR', message });
         await runInBackground(this.base, tenantId, () => this.setStatus(p.code, 'ERROR', message)).catch(() => undefined);
       })
       .finally(() => {
@@ -227,6 +388,7 @@ export class RetailApiService {
     const retailerId = await retailerIdFor(this.db, provider, label);
     let inSales = 0;
     let fromFile = 0;
+    let newOrders = 0;
     for (const o of orders) {
       await this.db.transaction(async (tx) => {
         const values = {
@@ -258,7 +420,8 @@ export class RetailApiService {
           .insert(retailApiOrders)
           .values(values)
           .onConflictDoUpdate({ target: [retailApiOrders.tenantId, retailApiOrders.provider, retailApiOrders.externalId], set: update })
-          .returning({ id: retailApiOrders.id });
+          .returning({ id: retailApiOrders.id, isNew: sql<boolean>`(xmax = 0)` });
+        if (row.isNew) newOrders++;
         if (!keepItems) await tx.delete(retailApiOrderItems).where(eq(retailApiOrderItems.orderId, row.id));
         if (o.items.length) {
           // Si el retailer repite el id de línea, se le agrega un sufijo para no chocar
@@ -288,7 +451,47 @@ export class RetailApiService {
         else fromFile++;
       });
     }
-    return { inSales, fromFile };
+    return { inSales, fromFile, newOrders };
+  }
+
+  /** Guarda los movimientos de liquidación de la API (si ya estaban, actualiza su estado de pago) */
+  private async saveSettlements(provider: string, label: string, moves: NormalizedSettlement[]) {
+    if (!moves.length) return 0;
+    const retailerId = await retailerIdFor(this.db, provider, label);
+    const unique = new Map(moves.map((m) => [m.lineKey, m]));
+    const values = [...unique.values()].map((m) => ({
+      retailerId,
+      lineKey: cut(m.lineKey, 300)!,
+      orderNumber: cut(m.orderNumber, 50),
+      saleItemId: cut(m.saleItemId, 50),
+      sellerSku: cut(m.sellerSku, 60),
+      productName: m.productName ?? null,
+      transactionType: m.transactionType,
+      kind: m.kind,
+      transactionDate: m.transactionDate,
+      amountGross: money(m.amountGross),
+      commissionPct: m.commissionPct === null || m.commissionPct === undefined ? null : String(m.commissionPct),
+      paymentStatus: cut(m.paymentStatus, 50),
+      statementNumber: cut(m.statementNumber, 100),
+      raw: { __origen: 'API', ...((m.raw ?? {}) as Record<string, unknown>) },
+    }));
+    for (let i = 0; i < values.length; i += 200) {
+      await this.db
+        .insert(settlementRecords)
+        .values(values.slice(i, i + 200))
+        .onConflictDoUpdate({
+          target: [settlementRecords.retailerId, settlementRecords.lineKey],
+          set: {
+            amountGross: sql`excluded.amount_gross`,
+            transactionDate: sql`excluded.transaction_date`,
+            paymentStatus: sql`excluded.payment_status`,
+            statementNumber: sql`excluded.statement_number`,
+            raw: sql`excluded.raw`,
+            updatedAt: new Date(),
+          },
+        });
+    }
+    return values.length;
   }
 
   private async saveProducts(provider: string, products: NormalizedProduct[]) {
@@ -498,11 +701,13 @@ export class RetailApiService {
       master_sku: string | null;
       sale_from: string | null;
       sale_to: string | null;
+      parent_sku: string | null;
+      own_name: string | null;
       last_change: { status: string; message: string | null; at: string } | null;
     }>(sql`
       select p.id, p.provider, p.seller_sku, p.retailer_sku, p.name, p.brand, p.price::float8 as price,
         p.sale_price::float8 as sale_price, p.stock, p.status, p.url, p.image_url, p.description, p.synced_at::text,
-        c.name as catalog_name, m.sku_master as master_sku,
+        c.name as catalog_name, m.sku_master as master_sku, sn.parent_sku, sn.name as own_name,
         lc.changes->>'saleFrom' as sale_from, lc.changes->>'saleTo' as sale_to,
         (select json_build_object('status', x.status, 'message', x.message, 'at', x.updated_at)
            from retail_product_changes x where x.provider = p.provider and x.seller_sku = p.seller_sku
@@ -520,6 +725,7 @@ export class RetailApiService {
         limit 1
       ) c on true
       left join products m on m.id = c.product_id
+      left join retail_sku_names sn on sn.provider = p.provider and sn.seller_sku = upper(p.seller_sku)
       ${provider ? sql`where p.provider = ${provider.toUpperCase()}` : sql``}
       order by p.provider, p.name
       limit 20000
@@ -545,7 +751,43 @@ export class RetailApiService {
       saleFrom: r.sale_from,
       saleTo: r.sale_to,
       lastChange: r.last_change,
+      parentSku: r.parent_sku,
+      ownName: r.own_name,
     }));
+  }
+
+  // ------------------------------------------------------------------ SKU padre/color
+
+  /** Todos los SKU padre/color asignados (para sugerirlos al asociar otro producto) */
+  async skuNames() {
+    const rows = await this.db
+      .select({ provider: retailSkuNames.provider, sellerSku: retailSkuNames.sellerSku, parentSku: retailSkuNames.parentSku, name: retailSkuNames.name })
+      .from(retailSkuNames)
+      .orderBy(retailSkuNames.parentSku);
+    return rows;
+  }
+
+  /**
+   * Asocia un SKU del retailer a un SKU padre/color con nombre propio. Desde ahí, Ventas muestra
+   * ese nombre en las órdenes de ese SKU (las ya cargadas y las que lleguen).
+   */
+  async setSkuName(provider: string, sellerSku: string, parentSku: string, name: string, user: string) {
+    const code = provider.toUpperCase();
+    if (!providerByCode(code)) throw new NotFoundException('Retailer desconocido');
+    const sku = sellerSku.trim().toUpperCase();
+    const values = { provider: code, sellerSku: sku, parentSku: parentSku.trim().toUpperCase(), name: name.trim(), updatedBy: user, updatedAt: new Date() };
+    await this.db
+      .insert(retailSkuNames)
+      .values(values)
+      .onConflictDoUpdate({ target: [retailSkuNames.tenantId, retailSkuNames.provider, retailSkuNames.sellerSku], set: values });
+    return { sellerSku: sku, parentSku: values.parentSku, name: values.name };
+  }
+
+  async removeSkuName(provider: string, sellerSku: string) {
+    await this.db
+      .delete(retailSkuNames)
+      .where(sql`${retailSkuNames.provider} = ${provider.toUpperCase()} and ${retailSkuNames.sellerSku} = ${sellerSku.trim().toUpperCase()}`);
+    return { ok: true };
   }
 
   // ------------------------------------------------------------------ Modificar productos en el retailer

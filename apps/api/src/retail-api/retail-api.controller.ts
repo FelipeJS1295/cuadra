@@ -121,6 +121,36 @@ export class RetailApiController {
     return this.service.updateProduct(provider, input.sellerSku, input.changes, user.name || user.email);
   }
 
+  /** SKU padre/color asignados */
+  @Get('sku-names')
+  skuNames() {
+    return this.service.skuNames();
+  }
+
+  /** Asocia un SKU del retailer a un SKU padre/color con nombre propio (se muestra en Ventas) */
+  @Put(':provider/sku-names')
+  setSkuName(@Param('provider') provider: string, @Body() body: unknown, @CurrentUser() user: SessionUser) {
+    const input = validate(
+      z.object({
+        sellerSku: z.string().trim().min(1).max(120),
+        parentSku: z
+          .string()
+          .trim()
+          .min(1, 'Escribe el SKU padre/color')
+          .max(80)
+          .regex(/^[A-Za-z0-9._\-/ ]+$/, 'El SKU padre/color solo puede tener letras, números, guion, punto o barra'),
+        name: z.string().trim().min(2, 'Escribe el nombre').max(300),
+      }),
+      body,
+    );
+    return this.service.setSkuName(provider, input.sellerSku, input.parentSku, input.name, user.name || user.email);
+  }
+
+  @Delete(':provider/sku-names/:sku')
+  removeSkuName(@Param('provider') provider: string, @Param('sku') sku: string) {
+    return this.service.removeSkuName(provider, sku);
+  }
+
   @Get(':provider/products/changes')
   changes(@Param('provider') provider: string, @Query('sku') sku?: string) {
     return this.service.changes(provider, sku || undefined);

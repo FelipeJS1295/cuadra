@@ -91,7 +91,7 @@ export function UploadDialog({ kind, onClose }: { kind: 'ventas' | 'liquidacion'
       <Field label="¿De qué retailer es?">
         <select value={retailer} onChange={(e) => setRetailer(e.target.value)} className={inputCls}>
           <option value="">Elige uno…</option>
-          {retailers.data?.map((r) => (
+          {retailers.data?.filter((r) => r.upload !== false).map((r) => (
             <option key={r.code} value={r.code}>
               {r.name}
             </option>

@@ -1,9 +1,10 @@
-import { arr, findArray, findDeep, http, num, pick, str, toDate } from './util.js';
+import { arr, dayOf, findArray, findDeep, http, num, pick, str, toDate } from './util.js';
 import {
   ProviderError,
   type NormalizedItem,
   type NormalizedOrder,
   type NormalizedProduct,
+  type InvoiceUpload,
   type ProductChanges,
   type ProviderConfig,
   type RetailProvider,
@@ -58,6 +59,58 @@ async function send(cfg: ProviderConfig, method: string, path: string, body?: un
 
 const get = (cfg: ProviderConfig, path: string) => send(cfg, 'GET', path);
 
+/** Boletas/facturas ya subidas a Paris para una sub-orden */
+async function invoicesOf(cfg: ProviderConfig, orderNumber: string) {
+  const path = cfg.settings.invoicePath || '/v1/invoice';
+  const body = await get(cfg, `${path}?order_number=${encodeURIComponent(orderNumber)}&limit=20&offset=0`);
+  return findArray(body);
+}
+
+/** Boletas que Paris ya tiene en cada sub-orden (GET /v1/invoice?order_number=…), de a 5 en paralelo */
+async function invoicesFor(cfg: ProviderConfig, orders: { orderNumber: string }[], progress: (m: string) => void) {
+  const out = new Map<string, string[]>();
+  for (let i = 0; i < orders.length; i += 5) {
+    await Promise.all(
+      orders.slice(i, i + 5).map(async (o) => {
+        // Si falla una orden, queda sin revisar (no se marca como faltante)
+        const list = await invoicesOf(cfg, o.orderNumber).catch(() => null);
+        if (list) out.set(o.orderNumber, list.map((r) => String(pick(r, 'invoice_number') ?? 'sin N°')));
+      }),
+    );
+    progress(`Revisando boletas en Paris: ${Math.min(i + 5, orders.length)} de ${orders.length}…`);
+  }
+  return out;
+}
+
+/**
+ * Sube la boleta a Paris: POST /v1/invoice (multipart) con invoice_number, invoice_type,
+ * order_number (la sub-orden), description y el PDF en "file". Paris se la envía al cliente.
+ */
+async function uploadInvoice(cfg: ProviderConfig, input: InvoiceUpload) {
+  if (input.pdf.length > 3 * 1024 * 1024) throw new ProviderError('El PDF pesa más de 3 MB, el máximo que acepta Paris');
+  const same = (r: Record<string, unknown>) => String(pick(r, 'invoice_number') ?? '').replace(/^0+/, '') === input.number.replace(/^0+/, '');
+  // Si ya está subida (p. ej. a mano en el portal), no se duplica
+  const before = await invoicesOf(cfg, input.orderNumber).catch(() => []);
+  const found = before.find(same);
+  if (found) return { id: str(pick(found, 'id')), already: true, raw: found };
+
+  const form = new FormData();
+  form.append('invoice_number', input.number);
+  form.append('invoice_type', input.type);
+  form.append('order_number', input.orderNumber);
+  form.append('description', input.description);
+  form.append('file', new Blob([new Uint8Array(input.pdf)], { type: 'application/pdf' }), input.fileName);
+  const t = await token(cfg);
+  const { json } = await http(`${base(cfg)}${cfg.settings.invoicePath || '/v1/invoice'}`, {
+    method: 'POST',
+    // Sin Content-Type: fetch pone el multipart con su "boundary"
+    headers: { Authorization: `Bearer ${t}`, Accept: 'application/json', ...(cfg.settings.sellerId ? { 'x-seller-id': cfg.settings.sellerId } : {}) },
+    body: form,
+    timeoutMs: 90000,
+  });
+  return { id: str(pick(json, 'id', 'data.id')), already: false, raw: json };
+}
+
 function normalizeItem(i: Record<string, unknown>, n: number): NormalizedItem {
   const qty = num(pick(i, 'quantity', 'qty')) ?? 1;
   const paid = num(pick(i, 'priceAfterDiscounts', 'paidPrice', 'grossPrice', 'price', 'basePrice'));
@@ -88,10 +141,15 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
         const subShipping = num(pick(s, 'shippingCost', 'cost', 'shipping.cost'));
         // Entrega real al cliente (la sub-orden la informa al llegar)
         const deliveredAt = toDate(pick(s, 'effectiveArrivalDate'));
+        // Día en que hay que entregarle la sub-orden al courier, y cuál courier (STARKEN…)
+        const dispatchDeadline = dayOf(pick(s, 'dispatchDate'));
+        const carrier = str(pick(s, 'carrier'));
         const items = arr(pick(s, 'items', 'products')).map((i, n) => ({
           ...normalizeItem(i, n),
           subOrderNumber: str(pick(i, 'subOrderNumber')) ?? sub,
           deliveredAt,
+          dispatchDeadline,
+          carrier,
         }));
         if (items.length && !items.some((i) => i.shippingAmount) && subShipping) items[0].shippingAmount = subShipping;
         return items;
@@ -105,6 +163,8 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
     orderNumber: str(pick(o, 'originOrderNumber', 'orderNumber', 'subOrders.0.subOrderNumber', 'id')),
     customerOrderId: str(pick(o, 'subOrders.0.subOrderNumber', 'subOrders.0.items.0.subOrderNumber')),
     orderDate: toDate(pick(o, 'createdAt', 'originOrderDate', 'orderDate', 'created_at')),
+    dispatchDeadline: dayOf(pick(o, 'subOrders.0.dispatchDate')),
+    carrier: str(pick(o, 'subOrders.0.carrier')),
     status: str(pick(o, 'status.name', 'status', 'subOrders.0.status.name')),
     customerName: str(pick(o, 'customer.name', 'customer.fullName', 'billingAddress.name', 'shippingAddress.name')),
     customerRut: str(pick(o, 'customer.documentNumber', 'billingAddress.documentNumber')) ?? findDeep(o, /^(rut|documentNumber|taxId)$/i),
@@ -131,7 +191,11 @@ export const paris: RetailProvider = {
     { key: 'baseUrl', label: 'URL de la API', default: 'https://api-developers.ecomm.cencosud.com' },
     { key: 'authPath', label: 'Ruta del token', default: '/v1/auth/apiKey', help: 'Ajustable si la documentación de Cencosud indica otra' },
     { key: 'ordersPath', label: 'Ruta de órdenes', default: '/v1/orders' },
+    { key: 'invoicePath', label: 'Ruta de boletas', default: '/v1/invoice', help: 'Donde se suben las boletas y facturas de cada orden' },
   ],
+
+  uploadInvoice,
+  invoicesFor,
 
   async test(cfg) {
     await token(cfg);

@@ -75,7 +75,7 @@ export function Page({
   children: ReactNode;
 }) {
   return (
-    <div className={`mx-auto w-full px-4 py-7 sm:px-8 lg:py-9 ${wide ? 'max-w-[1680px]' : 'max-w-6xl'}`}>
+    <div className={`mx-auto w-full px-4 py-6 sm:px-6 lg:py-8 ${wide ? 'max-w-[1680px]' : 'max-w-7xl'}`}>
       <header className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-line pb-5">
         <div className="max-w-2xl">
           <h1 className="display text-[1.75rem] leading-tight font-semibold">{title}</h1>

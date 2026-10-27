@@ -41,6 +41,24 @@ export function Landing() {
         </div>
       </header>
 
+      {/* Banner principal (lleva a crear cuenta) */}
+      <section aria-label="Cuadra, soluciones para empresas" className="bg-[#0b1626]">
+        <Link href="/registro" className="group mx-auto block max-w-[2048px]" aria-label="Crear cuenta en Cuadra">
+          <picture>
+            <source type="image/webp" srcSet="/img/banner-768.webp 768w, /img/banner-1280.webp 1280w, /img/banner-2048.webp 2048w" sizes="100vw" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/img/banner-2048.jpg"
+              width={2048}
+              height={768}
+              alt="Cuadra, soluciones para empresas: desarrollo de software, automatización de procesos, sistemas en la nube e integración de sistemas"
+              className="block h-auto w-full"
+              fetchPriority="high"
+            />
+          </picture>
+        </Link>
+      </section>
+
       {/* Portada */}
       <section className="border-b border-line bg-[linear-gradient(180deg,#ffffff_0%,#f5f6f8_100%)]">
         <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 pt-16 pb-20 sm:px-8 lg:grid-cols-[1.05fr_1fr] lg:pt-24 lg:pb-28">

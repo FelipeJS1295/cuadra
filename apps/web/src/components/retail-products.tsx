@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { History, ImageOff, Loader2, Pencil, RefreshCw, Search, Send, Store, Tag, Undo2 } from 'lucide-react';
+import { History, ImageOff, Link2, Loader2, Pencil, Plus, RefreshCw, Search, Send, Store, Tag, Undo2 } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from '@/components/session';
@@ -14,6 +14,7 @@ import {
   type RetailEditable,
   type RetailProductChange,
   type RetailProductChanges,
+  type RetailSkuName,
   type RetailSyncJob,
 } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -53,6 +54,8 @@ export function RetailProducts() {
   const products = useQuery({ queryKey: ['retail-products', conn?.provider], queryFn: () => api.retailProducts(conn!.provider), enabled: !!conn });
   const [search, setSearch] = useState('');
   const [onlyNoStock, setOnlyNoStock] = useState(false);
+  const [onlyUnlinked, setOnlyUnlinked] = useState(false);
+  const [naming, setNaming] = useState<RetailApiProduct | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [results, setResults] = useState<Record<string, RowResult>>({});
   const [editing, setEditing] = useState<RetailApiProduct | null>(null);
@@ -67,9 +70,13 @@ export function RetailProducts() {
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (products.data ?? []).filter(
-      (p) => (!q || `${p.name} ${p.sellerSku} ${p.retailerSku ?? ''} ${p.brand ?? ''}`.toLowerCase().includes(q)) && (!onlyNoStock || !p.stock),
+      (p) =>
+        (!q || `${p.name} ${p.sellerSku} ${p.retailerSku ?? ''} ${p.brand ?? ''} ${p.parentSku ?? ''} ${p.ownName ?? ''}`.toLowerCase().includes(q)) &&
+        (!onlyNoStock || !p.stock) &&
+        (!onlyUnlinked || !p.parentSku),
     );
-  }, [products.data, search, onlyNoStock]);
+  }, [products.data, search, onlyNoStock, onlyUnlinked]);
+  const unlinked = (products.data ?? []).filter((p) => !p.parentSku).length;
 
   if (conns.isLoading) return <Loading />;
   if (!connected.length)
@@ -80,7 +87,7 @@ export function RetailProducts() {
           title="No hay retailers conectados por API"
           text="Conecta Paris, Falabella o Walmart y aquí verás tus productos publicados para cambiar stock, precios y descripciones sin entrar a cada portal."
           action={
-            <Link href="/conexiones" className="text-sm font-medium text-brand-700 hover:underline">
+            <Link href="/configuracion?tab=conexiones" className="text-sm font-medium text-brand-700 hover:underline">
               Ir a Conexiones
             </Link>
           }
@@ -143,6 +150,10 @@ export function RetailProducts() {
         <label className="flex items-center gap-2 text-sm text-muted">
           <input type="checkbox" checked={onlyNoStock} onChange={(e) => setOnlyNoStock(e.target.checked)} className="size-4 accent-brand-600" /> Sin stock
         </label>
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={onlyUnlinked} onChange={(e) => setOnlyUnlinked(e.target.checked)} className="size-4 accent-brand-600" /> Sin SKU padre/color
+          {products.data && <span className="figure text-xs">({unlinked})</span>}
+        </label>
         {conn && <SyncProducts conn={conn} />}
       </div>
 
@@ -167,6 +178,7 @@ export function RetailProducts() {
             <thead className="border-b border-line">
               <tr>
                 <th className="px-3 py-3 text-left text-xs font-medium tracking-wide text-muted uppercase">Producto</th>
+                <th className="px-3 py-3 text-left text-xs font-medium tracking-wide text-muted uppercase">SKU padre / color</th>
                 <th className="px-3 py-3 text-left text-xs font-medium tracking-wide text-muted uppercase">Estado</th>
                 <th className="px-3 py-3 text-right text-xs font-medium tracking-wide text-muted uppercase">Stock</th>
                 <th className="px-3 py-3 text-right text-xs font-medium tracking-wide text-muted uppercase">Precio</th>
@@ -202,6 +214,30 @@ export function RetailProducts() {
                           </div>
                         </div>
                       </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      {p.parentSku ? (
+                        <button
+                          onClick={() => canEdit && setNaming(p)}
+                          disabled={!canEdit}
+                          className="group block max-w-[16rem] rounded-lg px-2 py-1 text-left hover:bg-brand-50 disabled:hover:bg-transparent"
+                          title={canEdit ? 'Cambiar SKU padre/color' : undefined}
+                        >
+                          <span className="flex items-center gap-1 text-xs font-medium text-brand-700">
+                            <Link2 className="size-3.5 shrink-0" /> {p.parentSku}
+                          </span>
+                          <span className="block truncate text-[0.8125rem]">{p.ownName}</span>
+                        </button>
+                      ) : canEdit ? (
+                        <button
+                          onClick={() => setNaming(p)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-dashed border-line-strong px-2 py-1 text-xs font-medium text-muted hover:border-brand-500 hover:text-brand-700"
+                        >
+                          <Plus className="size-3.5" /> Asociar
+                        </button>
+                      ) : (
+                        <span className="text-xs text-muted">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-xs text-muted">{p.status ?? '—'}</td>
                     <td className="px-3 py-2 text-right">
@@ -283,6 +319,7 @@ export function RetailProducts() {
       )}
 
       {editing && conn && <EditDialog conn={conn} product={editing} onClose={() => setEditing(null)} />}
+      {naming && conn && <SkuNameDialog conn={conn} product={naming} onClose={() => setNaming(null)} />}
     </div>
   );
 }
@@ -516,3 +553,120 @@ function ChangeRow({ c }: { c: RetailProductChange }) {
     </li>
   );
 }
+
+/**
+ * Asocia un producto del retailer a un SKU padre/color con nombre propio.
+ * Los retailers publican todos los colores con el mismo nombre; cada color tiene su SKU,
+ * y con esto Ventas muestra "Seccional Richter 3C Gris Oscuro" en vez del nombre genérico.
+ */
+function SkuNameDialog({ conn, product: p, onClose }: { conn: RetailApiConnection; product: RetailApiProduct; onClose: () => void }) {
+  const qc = useQueryClient();
+  const names = useQuery({ queryKey: ['retail-sku-names'], queryFn: api.retailSkuNames });
+  const [parentSku, setParentSku] = useState(p.parentSku ?? '');
+  const [name, setName] = useState(p.ownName ?? p.name ?? '');
+  const [touchedName, setTouchedName] = useState(!!p.ownName);
+
+  // SKU padre/color ya usados (uno por SKU padre, con su nombre)
+  const parents = useMemo(() => {
+    const m = new Map<string, { name: string; skus: RetailSkuName[] }>();
+    for (const n of names.data ?? []) {
+      const e = m.get(n.parentSku) ?? { name: n.name, skus: [] };
+      e.skus.push(n);
+      m.set(n.parentSku, e);
+    }
+    return m;
+  }, [names.data]);
+  const key = parentSku.trim().toUpperCase();
+  const existing = parents.get(key);
+  const siblings = (existing?.skus ?? []).filter((n) => !(n.provider === conn.provider && n.sellerSku === p.sellerSku.toUpperCase()));
+
+  // Si elige un SKU padre/color que ya existe, se propone su nombre
+  useEffect(() => {
+    if (existing && !touchedName) setName(existing.name);
+  }, [existing, touchedName]);
+
+  const done = () => {
+    for (const k of ['retail-products', 'retail-sku-names', 'sales', 'home']) qc.invalidateQueries({ queryKey: [k] });
+    onClose();
+  };
+  const save = useMutation({ mutationFn: () => api.setRetailSkuName(conn.provider, { sellerSku: p.sellerSku, parentSku, name }), onSuccess: done });
+  const remove = useMutation({ mutationFn: () => api.removeRetailSkuName(conn.provider, p.sellerSku), onSuccess: done });
+
+  return (
+    <Modal
+      title="SKU padre / color"
+      intro="El nombre que pongas aquí es el que verás en Ventas para este SKU, en las órdenes que ya llegaron y en las que vengan."
+      onClose={onClose}
+      footer={
+        <>
+          {p.parentSku && (
+            <Button variant="ghost" className="mr-auto text-berry-700" onClick={() => remove.mutate()} loading={remove.isPending}>
+              Quitar asociación
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!parentSku.trim() || name.trim().length < 2}>
+            Guardar
+          </Button>
+        </>
+      }
+    >
+      <div className="flex items-center gap-3 rounded-xl bg-paper px-3 py-2.5">
+        {p.imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={p.imageUrl} alt="" className="size-11 shrink-0 rounded-lg border border-line object-cover" />
+        ) : (
+          <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-stone-100 text-stone-400">
+            <ImageOff className="size-4" />
+          </span>
+        )}
+        <div className="min-w-0 text-sm">
+          <p className="truncate font-medium">{p.name ?? 'Sin nombre'}</p>
+          <p className="text-xs text-muted">
+            {conn.label} · SKU <span className="font-medium text-ink">{p.sellerSku}</span>
+          </p>
+        </div>
+      </div>
+
+      <Field label="SKU padre / color" hint="Tu código para este producto en este color. Ej: SEC-RICHTER-GO">
+        <input
+          value={parentSku}
+          onChange={(e) => setParentSku(e.target.value.toUpperCase())}
+          list="parent-skus"
+          autoFocus
+          placeholder="SEC-RICHTER-GO"
+          className={cn(inputCls, 'uppercase')}
+        />
+        <datalist id="parent-skus">
+          {[...parents.entries()].map(([k, v]) => (
+            <option key={k} value={k}>
+              {v.name}
+            </option>
+          ))}
+        </datalist>
+      </Field>
+      <Field label="Nombre para Ventas" hint="Incluye el color. Ej: Seccional Richter 3C Gris Oscuro">
+        <input
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setTouchedName(true);
+          }}
+          className={inputCls}
+        />
+      </Field>
+
+      {siblings.length > 0 && (
+        <p className="text-xs text-muted">
+          Este SKU padre/color ya está asociado a {siblings.map((n) => `${n.sellerSku} (${PROVIDER_LABEL[n.provider] ?? n.provider})`).join(', ')}.
+          {existing && name.trim() !== existing.name && ' Ojo: allá tiene otro nombre; cada SKU guarda el suyo.'}
+        </p>
+      )}
+      <ErrorBox error={save.error ?? remove.error} />
+    </Modal>
+  );
+}
+
+const PROVIDER_LABEL: Record<string, string> = { FALABELLA: 'Falabella', CENCOSUD: 'Paris', WALMART: 'Walmart', RIPLEY: 'Ripley', MERCADOLIBRE: 'Mercado Libre' };

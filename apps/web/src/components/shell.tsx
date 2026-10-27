@@ -11,7 +11,6 @@ import {
   LogOut,
   Menu,
   Package,
-  PlugZap,
   Plus,
   Receipt,
   Shield,
@@ -38,7 +37,6 @@ const NAV: { href: string; label: string; icon: LucideIcon; group: 'dia' | 'admi
   { href: '/compras', label: 'Compras', icon: Receipt, group: 'dia' },
   { href: '/impuestos', label: 'Impuestos', icon: Landmark, group: 'dia' },
   { href: '/productos', label: 'Productos', icon: Package, group: 'admin' },
-  { href: '/conexiones', label: 'Conexiones', icon: PlugZap, group: 'admin' },
   { href: '/configuracion', label: 'Configuración', icon: Cog, group: 'admin' },
 ];
 
@@ -86,51 +84,80 @@ function AppShell({ children }: { children: ReactNode }) {
     );
   if (me.isLoading || !me.data) return <Loading label="Abriendo Cuadra…" />;
   const user = me.data;
+  const items = [...NAV, ...(user.isSuperadmin ? [{ href: '/admin', label: 'Administración', icon: Shield, group: 'admin' as const }] : [])];
+  const main = items.filter((n) => n.href !== '/configuracion' && n.href !== '/admin');
+  const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
   return (
     <SessionProvider user={user}>
-      <div className="min-h-screen lg:pl-[248px]">
-        {/* Barra superior en el celular */}
-        <header className="sticky top-0 z-40 flex items-center gap-3 border-b border-graphite-700 bg-graphite-900 px-4 py-3 text-white lg:hidden">
-          <button onClick={() => setMenu(true)} className="-ml-1 rounded-lg p-1.5 hover:bg-white/10" aria-label="Abrir menú">
-            <Menu className="size-5" />
-          </button>
-          <Logo dark />
-          <span className="ml-auto max-w-[45%] truncate text-sm text-white/70">{user.tenantName}</span>
-        </header>
-
-        {menu && <div className="fixed inset-0 z-40 bg-graphite-900/50 lg:hidden" onClick={() => setMenu(false)} />}
-        <aside
-          className={cn(
-            'fixed inset-y-0 left-0 z-50 flex w-[248px] flex-col bg-graphite-900 text-white transition-transform lg:translate-x-0',
-            menu ? 'translate-x-0' : '-translate-x-full',
-          )}
-        >
-          <div className="flex items-center justify-between px-5 pt-5 pb-4">
-            <Link href="/">
+      <div className="min-h-screen">
+        <header className="sticky top-0 z-40 bg-graphite-900 text-white">
+          <div className="mx-auto flex h-12 max-w-[1680px] items-center gap-2 px-3 sm:px-5">
+            <button onClick={() => setMenu(!menu)} className="rounded-md p-1.5 text-white/80 hover:bg-white/10 lg:hidden" aria-label="Menú" aria-expanded={menu}>
+              {menu ? <X className="size-5" /> : <Menu className="size-5" />}
+            </button>
+            <Link href="/" className="mr-3 shrink-0" aria-label="Inicio">
               <Logo dark />
             </Link>
-            <button onClick={() => setMenu(false)} className="rounded-lg p-1 text-white/60 hover:bg-white/10 lg:hidden" aria-label="Cerrar menú">
-              <X className="size-5" />
-            </button>
-          </div>
-          <div className="px-3">
-            <TenantSwitcher />
+
+            {user.tenantId && (
+              <nav className="hidden h-full items-stretch lg:flex" aria-label="Secciones">
+                {main.map((n) => (
+                  <Link
+                    key={n.href}
+                    href={n.href}
+                    aria-current={isActive(n.href) ? 'page' : undefined}
+                    className={cn(
+                      'relative flex items-center px-3 text-[0.8125rem] transition-colors',
+                      isActive(n.href) ? 'font-medium text-white' : 'text-white/60 hover:text-white',
+                    )}
+                  >
+                    {n.label}
+                    {isActive(n.href) && <span aria-hidden className="absolute inset-x-3 bottom-0 h-[2px] rounded-full bg-brand-500" />}
+                  </Link>
+                ))}
+              </nav>
+            )}
+
+            <div className="ml-auto flex items-center gap-1">
+              <TenantSwitcher />
+              {user.isSuperadmin && (
+                <Link
+                  href="/admin"
+                  title="Administración"
+                  className={cn('hidden rounded-md p-1.5 hover:bg-white/10 lg:block', isActive('/admin') ? 'text-white' : 'text-white/60')}
+                >
+                  <Shield className="size-[18px]" strokeWidth={1.75} />
+                </Link>
+              )}
+              <Link
+                href="/configuracion"
+                title="Configuración"
+                className={cn('hidden rounded-md p-1.5 hover:bg-white/10 lg:block', isActive('/configuracion') ? 'text-white' : 'text-white/60')}
+              >
+                <Cog className="size-[18px]" strokeWidth={1.75} />
+              </Link>
+              <UserMenu />
+            </div>
           </div>
 
-          {user.tenantId && (
-            <nav className="mt-5 flex-1 overflow-y-auto px-3" aria-label="Secciones">
-              <NavGroup items={NAV.filter((n) => n.group === 'dia')} pathname={pathname} />
-              <p className="mt-6 mb-1.5 px-3 text-xs text-white/40">Ajustes</p>
-              <NavGroup items={NAV.filter((n) => n.group === 'admin')} pathname={pathname} />
-              {user.isSuperadmin && (
-                <NavGroup items={[{ href: '/admin', label: 'Administración', icon: Shield, group: 'admin' }]} pathname={pathname} />
-              )}
+          {/* Celular: el menú se despliega bajo la barra */}
+          {menu && (
+            <nav className="border-t border-white/10 px-3 pt-2 pb-3 lg:hidden" aria-label="Secciones">
+              {items.map((n) => (
+                <Link
+                  key={n.href}
+                  href={n.href}
+                  className={cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2 text-sm',
+                    isActive(n.href) ? 'bg-white/[0.08] font-medium text-white' : 'text-white/70 hover:bg-white/[0.04]',
+                  )}
+                >
+                  <n.icon className="size-4" strokeWidth={1.75} /> {n.label}
+                </Link>
+              ))}
             </nav>
           )}
-          {!user.tenantId && <div className="flex-1" />}
-
-          <UserMenu />
-        </aside>
+        </header>
 
         {user.mustChangePassword && pathname !== '/configuracion' && (
           <div className="border-b border-sun-100 bg-sun-50 px-4 py-2 text-center text-sm text-sun-700">
@@ -143,32 +170,6 @@ function AppShell({ children }: { children: ReactNode }) {
         <main>{children}</main>
       </div>
     </SessionProvider>
-  );
-}
-
-function NavGroup({ items, pathname }: { items: typeof NAV; pathname: string }) {
-  return (
-    <ul className="space-y-0.5">
-      {items.map((n) => {
-        const active = n.href === '/' ? pathname === '/' : pathname.startsWith(n.href);
-        return (
-          <li key={n.href}>
-            <Link
-              href={n.href}
-              aria-current={active ? 'page' : undefined}
-              className={cn(
-                'relative flex items-center gap-3 rounded-lg px-3 py-2 text-[0.875rem] transition-colors',
-                active ? 'bg-white/[0.08] font-medium text-white' : 'text-white/65 hover:bg-white/[0.04] hover:text-white',
-              )}
-            >
-              {active && <span aria-hidden className="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-brand-500" />}
-              <n.icon className={cn('size-[18px]', active ? 'text-white' : 'text-white/50')} strokeWidth={1.75} />
-              {n.label}
-            </Link>
-          </li>
-        );
-      })}
-    </ul>
   );
 }
 
@@ -202,20 +203,16 @@ function TenantSwitcher() {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-left hover:bg-white/[0.08]"
+        className="flex max-w-[220px] items-center gap-2 rounded-md px-2 py-1 text-left text-[0.8125rem] text-white/85 hover:bg-white/10"
         aria-expanded={open}
+        title="Cambiar de empresa"
       >
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-white/10 text-xs font-semibold">
-          {(user.tenantName ?? '?').slice(0, 1).toUpperCase()}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{user.tenantName ?? 'Elegir empresa'}</span>
-          <span className="block text-xs text-white/45">{user.businessMode === 'FABRICANTE' ? 'Fabricante' : 'Revendedor'}</span>
-        </span>
-        <ChevronsUpDown className="size-4 shrink-0 text-white/40" />
+        <Building2 className="size-4 shrink-0 text-white/50" strokeWidth={1.75} />
+        <span className="truncate">{user.tenantName ?? 'Elegir empresa'}</span>
+        <ChevronsUpDown className="size-3.5 shrink-0 text-white/40" />
       </button>
       {open && (
-        <div className="absolute inset-x-0 z-10 mt-1.5 rounded-xl border border-line bg-white p-1.5 text-ink shadow-[0_16px_40px_-12px_rgba(15,20,30,0.35)]">
+        <div className="absolute right-0 z-10 mt-1.5 w-72 rounded-xl border border-line bg-white p-1.5 text-ink shadow-[0_16px_40px_-12px_rgba(15,20,30,0.35)]">
           <p className="px-2 pt-1 pb-1.5 text-xs text-muted">Tus empresas</p>
           {user.tenants.map((t) => (
             <button
@@ -256,24 +253,32 @@ function UserMenu() {
     .join('')
     .toUpperCase();
   return (
-    <div ref={ref} className="relative border-t border-white/10 p-3">
+    <div ref={ref} className="relative ml-1">
+      <button
+        onClick={() => setOpen(!open)}
+        className="grid size-7 place-items-center rounded-full bg-brand-600 text-[0.6875rem] font-semibold text-white ring-2 ring-transparent hover:ring-white/20"
+        aria-expanded={open}
+        title={user.name}
+      >
+        {initials}
+      </button>
       {open && (
-        <div className="absolute inset-x-3 bottom-full mb-1.5 rounded-xl border border-line bg-white p-1.5 text-ink shadow-[0_16px_40px_-12px_rgba(15,20,30,0.35)]">
-          <Link href="/configuracion?tab=cuenta" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper">
+        <div className="absolute right-0 z-10 mt-2 w-64 rounded-xl border border-line bg-white p-1.5 text-ink shadow-[0_16px_40px_-12px_rgba(15,20,30,0.35)]">
+          <div className="border-b border-line px-2 pt-1 pb-2">
+            <p className="truncate text-sm font-medium">{user.name}</p>
+            <p className="truncate text-xs text-muted">{user.email}</p>
+          </div>
+          <Link href="/configuracion?tab=cuenta" onClick={() => setOpen(false)} className="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper">
             <UserRound className="size-4 text-muted" /> Mi cuenta
+          </Link>
+          <Link href="/configuracion" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper">
+            <Cog className="size-4 text-muted" /> Configuración
           </Link>
           <button onClick={() => logout.mutate()} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-berry-700 hover:bg-berry-50">
             <LogOut className="size-4" /> Cerrar sesión
           </button>
         </div>
       )}
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-white/[0.06]" aria-expanded={open}>
-        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-semibold">{initials}</span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm">{user.name}</span>
-          <span className="block truncate text-xs text-white/45">{user.email}</span>
-        </span>
-      </button>
     </div>
   );
 }

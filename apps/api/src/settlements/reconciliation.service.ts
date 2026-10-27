@@ -132,6 +132,10 @@ const MATCH_CONFIG: Record<string, MatchConfig> = {
   HITES: { matchBy: 'ORDER', expectedPrice: 'PAID' },
   // Walmart: la liquidación usa el número de orden del cliente ("Número De Orden" = order_id)
   WALMART: { matchBy: 'ORDER_ID', expectedPrice: 'PAID' },
+  // Ripley (Mirakl): cada movimiento trae la línea de la orden (order_line_id = Item id de la venta)
+  RIPLEY: { matchBy: 'ITEM', expectedPrice: 'PAID' },
+  // Mercado Libre / Mercado Pago: el pago es por orden
+  MERCADOLIBRE: { matchBy: 'ORDER', expectedPrice: 'PAID' },
 };
 
 /**

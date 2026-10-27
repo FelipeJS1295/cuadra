@@ -103,7 +103,7 @@ export class SiiProviderService {
       }
       const who = (Object.keys(CAPABILITIES) as SiiProviderKind[]).filter((k) => CAPABILITIES[k][cap]).map((k) => PROVIDER_NAMES[k]);
       throw new BadRequestException(
-        `Con ${PROVIDER_NAMES[s.provider]} no puedes ${what}. Eso se hace con ${who.join(' o ')} (Conexiones → SII)`,
+        `Con ${PROVIDER_NAMES[s.provider]} no puedes ${what}. Eso se hace con ${who.join(' o ')} (Configuración → SII)`,
       );
     }
     return s.provider;

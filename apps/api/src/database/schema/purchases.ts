@@ -141,6 +141,15 @@ export const customerReceipts = pgTable(
     pdfUrl: text('pdf_url'),
     /** Respuesta o error del SII (para revisar) */
     siiResponse: jsonb('sii_response'),
+    /**
+     * Envío del documento al portal del retailer (Paris exige subir la boleta de cada orden).
+     * ENVIADA · ERROR · null (no se ha enviado o el retailer no lo pide)
+     */
+    retailStatus: varchar('retail_status', { length: 20 }),
+    retailMessage: text('retail_message'),
+    retailSentAt: timestamp('retail_sent_at', { withTimezone: true }),
+    /** Id del documento en el retailer */
+    retailRef: varchar('retail_ref', { length: 80 }),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })

@@ -50,7 +50,7 @@ export class SimpleApiClient {
     const s = await this.settings.sii();
     const missing = this.settings.siiMissing({ ...s, provider: 'SIMPLEAPI' });
     if (missing.length) {
-      throw new ServiceUnavailableException(`La conexión con SimpleAPI no está configurada. Falta: ${missing.join(', ')} (Conexiones → SII)`);
+      throw new ServiceUnavailableException(`La conexión con SimpleAPI no está configurada. Falta: ${missing.join(', ')} (Configuración → SII)`);
     }
     return { url: s.simpleapiUrl, key: s.simpleapiKey!, rut: s.emisorRut!, userRut: s.usuarioRut!, clave: s.clave!, tenantId: this.settings.tenantId() };
   }

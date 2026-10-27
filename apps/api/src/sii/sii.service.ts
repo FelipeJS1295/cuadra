@@ -3,6 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
 import { customerReceipts, retailers, salesRecords } from '../database/schema/index.js';
 import { showsCustomerOrderId } from '../settlements/reconciliation.service.js';
+import { RetailApiService } from '../retail-api/retail-api.service.js';
 import { SalesService } from '../sales/sales.service.js';
 import { ApiGatewayClient, SiiRejectedError } from './api-gateway.client.js';
 import { RUT_GENERICO, siiRut } from './rut.js';
@@ -43,6 +44,7 @@ export class SiiService {
     private readonly sales: SalesService,
     private readonly gateway: ApiGatewayClient,
     private readonly provider: SiiProviderService,
+    private readonly retail: RetailApiService,
   ) {}
 
   /** Proveedor del SII elegido, si está configurado y qué permite hacer */
@@ -185,7 +187,9 @@ export class SiiService {
         })
         .where(eq(customerReceipts.id, receiptId))
         .returning({ id: customerReceipts.id, number: customerReceipts.receiptNumber });
-      return { ok: true as const, id: saved.id, folio: result.folio, total: p.total, orderNumber, issuedAt: p.issueDate };
+      // Paris exige subir la boleta a su portal: se envía altiro (si falla, queda para reenviar)
+      const retail = await this.sendToRetailer(saved.id, { onlyIfReady: true });
+      return { ok: true as const, id: saved.id, folio: result.folio, total: p.total, orderNumber, issuedAt: p.issueDate, retail };
     } catch (err) {
       const message = (err as Error).message;
       if (err instanceof SiiRejectedError) {
@@ -214,7 +218,7 @@ export class SiiService {
       } catch (err) {
         results.push({ ok: false as const, orderNumber: o.orderNumber, error: (err as Error).message });
         // Si falla la configuración o las credenciales, no tiene sentido seguir
-        if (/configurad|clave|token|autentic|crédito|credito|Conexiones → SII/i.test((err as Error).message)) break;
+        if (/configurad|clave|token|autentic|crédito|credito|Conexiones → SII|Configuración → SII/i.test((err as Error).message)) break;
       }
     }
     return {
@@ -264,5 +268,79 @@ export class SiiService {
     const data = await this.gateway.pdfBoleta(Number(r.receiptNumber), r.documentType, r.issuedAt ?? todayCL());
     await this.db.update(customerReceipts).set({ pdfData: data.toString('base64') }).where(eq(customerReceipts.id, r.id));
     return { data, fileName };
+  }
+
+  // ------------------------------------------------------------------ Enviar al retailer
+
+  /**
+   * Sube la boleta (o factura) emitida al portal del retailer, si el retailer lo recibe por API
+   * (hoy Paris). Nunca lanza error: deja el resultado anotado en el documento.
+   * Con onlyIfReady, si el retailer no recibe boletas o no está conectado, no hace nada (null).
+   */
+  async sendToRetailer(receiptId: string, opts: { onlyIfReady?: boolean } = {}): Promise<{ ok: boolean; retailer: string; message: string } | null> {
+    const [r] = await this.db
+      .select({ receipt: customerReceipts, code: retailers.code, name: retailers.name })
+      .from(customerReceipts)
+      .innerJoin(retailers, eq(retailers.id, customerReceipts.retailerId))
+      .where(eq(customerReceipts.id, receiptId));
+    if (!r) throw new NotFoundException('El documento no existe');
+    const ready = await this.retail.invoiceUploadReady(r.code);
+    if (!ready) {
+      if (opts.onlyIfReady) return null;
+      throw new BadRequestException(`${r.name} no recibe boletas por API o no está conectado (Configuración → Conexiones)`);
+    }
+    const label = ready.label;
+    const doc = r.receipt.documentType === 33 ? 'factura' : 'boleta';
+    let result: { ok: boolean; retailer: string; message: string };
+    try {
+      if (r.receipt.status !== 'EMITIDA') throw new Error(`Solo se envían documentos emitidos desde Cuadra (esta ${doc} está ${r.receipt.status.toLowerCase()})`);
+      const { data, fileName } = await this.pdf(receiptId);
+      const res = await this.retail.uploadInvoice(r.code, {
+        orderNumber: r.receipt.orderNumber,
+        number: r.receipt.receiptNumber,
+        type: doc,
+        issuedAt: r.receipt.issuedAt ?? todayCL(),
+        externalOrderId: null,
+        pdf: data,
+        fileName,
+        description: `${doc === 'factura' ? 'Factura' : 'Boleta'} N° ${r.receipt.receiptNumber} de la orden ${r.receipt.orderNumber}`,
+      });
+      const message = res.already ? `Ya estaba en ${label}` : `Enviada a ${label}`;
+      await this.db
+        .update(customerReceipts)
+        .set({ retailStatus: 'ENVIADA', retailMessage: message, retailSentAt: new Date(), retailRef: res.id?.slice(0, 80) ?? null })
+        .where(eq(customerReceipts.id, receiptId));
+      result = { ok: true, retailer: label, message };
+    } catch (err) {
+      const message = (err as Error).message.slice(0, 500);
+      await this.db
+        .update(customerReceipts)
+        .set({ retailStatus: 'ERROR', retailMessage: message, retailSentAt: new Date() })
+        .where(eq(customerReceipts.id, receiptId));
+      result = { ok: false, retailer: label, message };
+    }
+    return result;
+  }
+
+  /** Envía al retailer todos los documentos emitidos que aún no se le envían (o que fallaron) */
+  async sendPendingToRetailer(retailerCode: string) {
+    const code = retailerCode.toUpperCase();
+    if (!(await this.retail.invoiceUploadReady(code))) throw new BadRequestException('Ese retailer no recibe boletas por API o no está conectado');
+    const rows = await this.db
+      .select({ id: customerReceipts.id, orderNumber: customerReceipts.orderNumber })
+      .from(customerReceipts)
+      .innerJoin(retailers, eq(retailers.id, customerReceipts.retailerId))
+      .where(
+        and(
+          eq(retailers.code, code),
+          eq(customerReceipts.status, 'EMITIDA'),
+          sql`coalesce(${customerReceipts.retailStatus}, '') <> 'ENVIADA'`,
+        ),
+      )
+      .orderBy(customerReceipts.createdAt)
+      .limit(200);
+    const results = [];
+    for (const row of rows) results.push({ orderNumber: row.orderNumber, ...(await this.sendToRetailer(row.id))! });
+    return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
   }
 }

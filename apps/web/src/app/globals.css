@@ -131,3 +131,117 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Sincronización de ventas: entrada de filas, check que aparece y barra que avanza */
+@keyframes cuadra-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes cuadra-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes cuadra-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@keyframes cuadra-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+.anim-rise {
+  animation: cuadra-rise 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.anim-pop {
+  animation: cuadra-pop 0.38s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.anim-sweep {
+  animation: cuadra-sweep 1.3s ease-in-out infinite;
+}
+.anim-ping {
+  animation: cuadra-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Impresión: solo lo marcado con .print-area (p. ej. la Maestra de despachos), en horizontal */
+.print-only {
+  display: none;
+}
+@media print {
+  @page {
+    size: landscape;
+    margin: 10mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+  .print-root {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: none !important;
+    backdrop-filter: none !important;
+  }
+  .print-area {
+    max-width: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .print-area .overflow-x-auto {
+    overflow: visible !important;
+  }
+  .print-area .sticky {
+    position: static !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: inline;
+  }
+  .dispatch-table {
+    font-size: 11px;
+  }
+  .dispatch-table tr {
+    break-inside: avoid;
+  }
+  .dispatch-group,
+  .dispatch-group td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

@@ -58,7 +58,24 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
       ),
     )
     .limit(1);
-  if (fromFile) return false;
+  if (fromFile) {
+    // Manda el archivo, pero la fecha de entrega al courier y el courier se toman de la API
+    // si el archivo no los trae (los usa la Maestra de despachos)
+    for (const i of o.items.length ? o.items : [{ subOrderNumber: null, dispatchDeadline: null, carrier: null }]) {
+      const deadline = i.dispatchDeadline ?? o.dispatchDeadline ?? null;
+      const carrier = cut(i.carrier ?? o.carrier ?? null, 100);
+      if (!deadline && !carrier) continue;
+      const nums = i.subOrderNumber ? [i.subOrderNumber] : numbers;
+      await tx
+        .update(salesRecords)
+        .set({
+          dispatchDeadline: sql`coalesce(${salesRecords.dispatchDeadline}, ${deadline}::date)`,
+          carrier: sql`coalesce(${salesRecords.carrier}, ${carrier})`,
+        })
+        .where(and(eq(salesRecords.retailerId, retailerId), sql`(${salesRecords.orderNumber} in ${nums} or ${salesRecords.orderId} in ${nums})`));
+    }
+    return false;
+  }
 
   // Paris: si la orden no trae N° de sub-orden pero la misma orden ya está en Ventas con su sub-orden
   // (otra respuesta de la API la trajo completa), no se duplica con el N° de la orden madre
@@ -134,6 +151,8 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
       shippingCost: money(i.shippingAmount),
       status: cut(i.status ?? o.status, 50),
       deliveredAt: dateCL(i.deliveredAt ?? null),
+      dispatchDeadline: i.dispatchDeadline ?? o.dispatchDeadline ?? null,
+      carrier: cut(i.carrier ?? o.carrier ?? null, 100),
       raw: { __origen: API_ORIGIN, apiOrderId, provider, item: (i.raw ?? null) as unknown } as Record<string, unknown>,
     };
   });
@@ -171,6 +190,8 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
         unitPrice: sql`excluded.unit_price`,
         shippingCost: sql`excluded.shipping_cost`,
         deliveredAt: sql`coalesce(excluded.delivered_at, ${salesRecords.deliveredAt})`,
+        dispatchDeadline: sql`coalesce(excluded.dispatch_deadline, ${salesRecords.dispatchDeadline})`,
+        carrier: sql`coalesce(excluded.carrier, ${salesRecords.carrier})`,
         raw: sql`excluded.raw`,
       },
       // Nunca pisa una línea que vino de un archivo
