@@ -10,6 +10,8 @@ interface SessionCtx {
   canEdit: boolean;
   /** Dueño o administrador de la empresa */
   isAdmin: boolean;
+  /** La empresa fabrica lo que vende (costos por insumos, sin factura de proveedor por venta) */
+  isFactory: boolean;
 }
 
 const Ctx = createContext<SessionCtx | null>(null);
@@ -29,6 +31,7 @@ export function SessionProvider({ user, children }: { user: SessionUser; childre
     user,
     canEdit: user.role !== 'LECTURA',
     isAdmin: user.role === 'DUENO' || user.role === 'ADMIN',
+    isFactory: user.businessMode === 'FABRICANTE',
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

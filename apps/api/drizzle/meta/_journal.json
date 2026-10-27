@@ -22,6 +22,41 @@
       "when": 1792620417642,
       "tag": "0002_api_a_ventas",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792675495506,
+      "tag": "0003_fabricantes",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792675496506,
+      "tag": "0004_paris_duplicadas",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792693352144,
+      "tag": "0005_productos_retail",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792693353144,
+      "tag": "0006_paris_envio",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792728312201,
+      "tag": "0007_calendario_pagos",
+      "breakpoints": true
     }
   ]
 }

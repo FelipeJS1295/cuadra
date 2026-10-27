@@ -4,9 +4,17 @@ import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { BASE_DB, DRIZZLE, type Database } from '../database/database.module.js';
 import { currentTenantId, runInBackground } from '../database/tenant-context.js';
-import { retailApiConnections, retailApiOrderItems, retailApiOrders, retailApiProducts } from '../database/schema/index.js';
+import { retailApiConnections, retailApiOrderItems, retailApiOrders, retailApiProducts, retailProductChanges } from '../database/schema/index.js';
 import { PROVIDERS, providerByCode } from './providers/index.js';
-import { ProviderError, type NormalizedOrder, type NormalizedProduct, type ProviderConfig, type RetailProvider } from './providers/types.js';
+import {
+  ProviderError,
+  type NormalizedOrder,
+  type NormalizedProduct,
+  type ProductChanges,
+  type ProviderConfig,
+  type RetailProvider,
+  type UpdateResult,
+} from './providers/types.js';
 import { decryptSecrets, encryptSecrets, mask } from '../common/secrets.js';
 import { orderToSales, retailerIdFor } from './api-to-sales.js';
 
@@ -77,8 +85,34 @@ export class RetailApiService {
         lastTestAt: r?.lastTestAt?.toISOString() ?? null,
         lastOrdersSyncAt: r?.lastOrdersSyncAt?.toISOString() ?? null,
         lastProductsSyncAt: r?.lastProductsSyncAt?.toISOString() ?? null,
+        editable: p.editable ?? [],
       };
     });
+  }
+
+  /**
+   * Desconecta un retailer por API (las ventas se cargarán por archivo).
+   * Quita de Ventas las órdenes que llegaron por API, menos las que ya tienen boleta o factura.
+   */
+  async disconnect(code: string) {
+    const p = this.provider(code);
+    await this.db
+      .update(retailApiConnections)
+      .set({ enabled: false, status: 'SIN_PROBAR', lastError: null })
+      .where(sql`${retailApiConnections.provider} = ${p.code}`);
+    const { rows } = await this.db.execute<{ removed: number; kept: number }>(sql`
+      with api as (
+        select s.id, s.retailer_id, s.order_number,
+          exists (select 1 from customer_receipts cr where cr.retailer_id = s.retailer_id and cr.order_number = s.order_number) as has_doc
+        from sales_records s join retailers r on r.id = s.retailer_id
+        where r.code = ${p.code} and s.raw->>'__origen' = 'API'
+      ), del as (
+        delete from sales_records s using api where s.id = api.id and not api.has_doc returning s.id
+      )
+      select (select count(*) from del)::int as removed,
+        (select count(distinct order_number) from api where has_doc)::int as kept
+    `);
+    return { ok: true, removed: rows[0]?.removed ?? 0, kept: rows[0]?.kept ?? 0 };
   }
 
   /** Guarda la conexión. Las claves vacías no se tocan (se mantiene la guardada) */
@@ -272,6 +306,7 @@ export class RetailApiService {
         status: cut(p.status, 60),
         url: cut(p.url, 500),
         imageUrl: cut(p.imageUrl, 500),
+        description: p.description ?? null,
         raw: p.raw,
         syncedAt: new Date(),
       };
@@ -457,14 +492,28 @@ export class RetailApiService {
       status: string | null;
       url: string | null;
       image_url: string | null;
+      description: string | null;
       synced_at: string;
       catalog_name: string | null;
       master_sku: string | null;
+      sale_from: string | null;
+      sale_to: string | null;
+      last_change: { status: string; message: string | null; at: string } | null;
     }>(sql`
       select p.id, p.provider, p.seller_sku, p.retailer_sku, p.name, p.brand, p.price::float8 as price,
-        p.sale_price::float8 as sale_price, p.stock, p.status, p.url, p.image_url, p.synced_at::text,
-        c.name as catalog_name, m.sku_master as master_sku
+        p.sale_price::float8 as sale_price, p.stock, p.status, p.url, p.image_url, p.description, p.synced_at::text,
+        c.name as catalog_name, m.sku_master as master_sku,
+        lc.changes->>'saleFrom' as sale_from, lc.changes->>'saleTo' as sale_to,
+        (select json_build_object('status', x.status, 'message', x.message, 'at', x.updated_at)
+           from retail_product_changes x where x.provider = p.provider and x.seller_sku = p.seller_sku
+           order by x.created_at desc limit 1) as last_change
       from retail_api_products p
+      -- Fechas de la última oferta enviada desde Cuadra (los retailers no siempre las devuelven)
+      left join lateral (
+        select x.changes from retail_product_changes x
+        where x.provider = p.provider and x.seller_sku = p.seller_sku and x.status = 'APLICADO' and x.changes ? 'salePrice'
+        order by x.created_at desc limit 1
+      ) lc on true
       left join lateral (
         select rp.name, rp.product_id from retailer_products rp join retailers r on r.id = rp.retailer_id
         where r.code = p.provider and (rp.seller_sku = p.seller_sku or rp.retailer_sku in (p.seller_sku, p.retailer_sku))
@@ -489,9 +538,120 @@ export class RetailApiService {
       status: r.status,
       url: r.url,
       imageUrl: r.image_url,
+      description: r.description,
       syncedAt: r.synced_at,
       inCatalog: r.catalog_name !== null,
       masterSku: r.master_sku,
+      saleFrom: r.sale_from,
+      saleTo: r.sale_to,
+      lastChange: r.last_change,
+    }));
+  }
+
+  // ------------------------------------------------------------------ Modificar productos en el retailer
+
+  /**
+   * Envía al retailer los cambios de un producto (stock, precio, oferta, nombre, descripción)
+   * y deja el registro en el historial. Si el retailer lo aplica, se actualiza la copia local.
+   */
+  async updateProduct(code: string, sellerSku: string, changes: ProductChanges, user: string) {
+    const p = this.provider(code);
+    if (!p.updateProduct) throw new BadRequestException(`${p.label} no permite modificar productos por API`);
+    const asked = Object.keys(changes).filter((k) => !['saleFrom', 'saleTo'].includes(k)) as (keyof ProductChanges)[];
+    const notAllowed = asked.filter((k) => !(p.editable ?? []).includes(k as never));
+    if (notAllowed.length) throw new BadRequestException(`${p.label} no permite cambiar por API: ${notAllowed.join(', ')}`);
+    if (!asked.length) throw new BadRequestException('No hay cambios');
+    if (changes.salePrice) {
+      if (!changes.saleFrom || !changes.saleTo) throw new BadRequestException('La oferta necesita fecha de inicio y de término');
+      if (changes.saleTo < changes.saleFrom) throw new BadRequestException('La fecha de término es anterior a la de inicio');
+    }
+    const [prod] = await this.db
+      .select()
+      .from(retailApiProducts)
+      .where(sql`${retailApiProducts.provider} = ${p.code} and ${retailApiProducts.sellerSku} = ${sellerSku}`);
+    if (!prod) throw new NotFoundException('Producto no encontrado: vuelve a traer los productos');
+    const price = changes.price ?? num(prod.price);
+    const sale = changes.salePrice === undefined ? num(prod.salePrice) : changes.salePrice;
+    if (price !== null && sale && sale >= price) throw new BadRequestException('El precio oferta debe ser menor que el precio normal');
+
+    const before = Object.fromEntries(
+      asked.map((k) => [k, k === 'price' ? num(prod.price) : k === 'salePrice' ? num(prod.salePrice) : k === 'stock' ? prod.stock : k === 'name' ? prod.name : prod.description]),
+    );
+    const [rec] = await this.db
+      .insert(retailProductChanges)
+      .values({ provider: p.code, sellerSku, changes, before, status: 'ENVIANDO', createdBy: user })
+      .returning({ id: retailProductChanges.id });
+
+    let result: UpdateResult;
+    try {
+      const cfg = await this.config(p);
+      result = await p.updateProduct(cfg, { sellerSku, retailerSku: prod.retailerSku, price: num(prod.price), salePrice: num(prod.salePrice), raw: prod.raw }, changes);
+    } catch (err) {
+      result = { status: 'RECHAZADO', message: errMessage(err) };
+    }
+    await this.finishChange(rec.id, p.code, sellerSku, changes, result);
+    return { id: rec.id, ...result };
+  }
+
+  /** Guarda cómo terminó un cambio y, si se aplicó, actualiza la copia local del producto */
+  private async finishChange(id: string, provider: string, sellerSku: string, changes: ProductChanges, r: UpdateResult) {
+    await this.db
+      .update(retailProductChanges)
+      .set({ status: r.status, message: r.message.slice(0, 2000), reference: cut(r.reference, 120), updatedAt: new Date() })
+      .where(eq(retailProductChanges.id, id));
+    if (r.status !== 'APLICADO') return;
+    const set: Record<string, unknown> = {};
+    if (changes.stock !== undefined) set.stock = Math.round(changes.stock);
+    if (changes.price !== undefined) set.price = money(changes.price);
+    if (changes.salePrice !== undefined) set.salePrice = money(changes.salePrice);
+    if (changes.name !== undefined) set.name = cut(changes.name, 300);
+    if (changes.description !== undefined) set.description = changes.description;
+    if (Object.keys(set).length) {
+      await this.db
+        .update(retailApiProducts)
+        .set(set)
+        .where(sql`${retailApiProducts.provider} = ${provider} and ${retailApiProducts.sellerSku} = ${sellerSku}`);
+    }
+  }
+
+  /** Historial de cambios de un producto. Antes consulta los que siguen en proceso en el retailer */
+  async changes(code: string, sellerSku?: string) {
+    const p = this.provider(code);
+    const pending = await this.db
+      .select()
+      .from(retailProductChanges)
+      .where(
+        sql`${retailProductChanges.provider} = ${p.code} and ${retailProductChanges.status} = 'EN_PROCESO' and ${retailProductChanges.reference} is not null
+          ${sellerSku ? sql`and ${retailProductChanges.sellerSku} = ${sellerSku}` : sql``}`,
+      )
+      .limit(10);
+    if (pending.length && p.checkUpdate) {
+      const cfg = await this.config(p);
+      for (const c of pending) {
+        const r = await p.checkUpdate(cfg, c.reference!).catch((err) => ({ status: 'EN_PROCESO' as const, message: `No se pudo consultar: ${errMessage(err)}` }));
+        // Si lleva más de un día sin respuesta, se da por perdido
+        const stale = Date.now() - c.createdAt.getTime() > 86400000;
+        if (r.status !== 'EN_PROCESO' || stale) {
+          await this.finishChange(c.id, p.code, c.sellerSku, c.changes as ProductChanges, stale && r.status === 'EN_PROCESO' ? { status: 'RECHAZADO', message: 'El retailer no informó el resultado' } : r);
+        }
+      }
+    }
+    const rows = await this.db
+      .select()
+      .from(retailProductChanges)
+      .where(sql`${retailProductChanges.provider} = ${p.code} ${sellerSku ? sql`and ${retailProductChanges.sellerSku} = ${sellerSku}` : sql``}`)
+      .orderBy(sql`${retailProductChanges.createdAt} desc`)
+      .limit(sellerSku ? 30 : 200);
+    return rows.map((r) => ({
+      id: r.id,
+      sellerSku: r.sellerSku,
+      changes: r.changes as ProductChanges,
+      before: r.before as Partial<ProductChanges> | null,
+      status: r.status,
+      message: r.message,
+      createdBy: r.createdBy,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
     }));
   }
 }
@@ -504,6 +664,7 @@ export function defaultRange() {
 }
 
 const cut = (v: string | null | undefined, max: number) => (v === null || v === undefined ? null : String(v).slice(0, max));
+const num = (v: string | null | undefined) => (v === null || v === undefined ? null : Number(v));
 const money = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? null : String(Math.round(v * 100) / 100));
 const errMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 

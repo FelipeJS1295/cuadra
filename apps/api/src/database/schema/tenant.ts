@@ -16,6 +16,12 @@ export const tenants = pgTable('tenants', {
   plan: varchar('plan', { length: 20 }).notNull().default('PRUEBA'),
   /** ACTIVA · SUSPENDIDA */
   status: varchar('status', { length: 20 }).notNull().default('ACTIVA'),
+  /**
+   * Tipo de negocio:
+   *  REVENDEDOR  compra productos a proveedores y los vende (costo = factura del proveedor)
+   *  FABRICANTE  fabrica lo que vende (costo = insumos de la receta del producto)
+   */
+  businessMode: varchar('business_mode', { length: 20 }).notNull().default('REVENDEDOR'),
   trialEndsAt: date('trial_ends_at'),
   /** Pasos del asistente de inicio que ya se completaron o saltaron */
   onboarding: jsonb('onboarding').notNull().default({}),

@@ -16,7 +16,7 @@ export default function SignupPage() {
   });
   return (
     <AuthLayout>
-      <h1 className="text-3xl font-semibold tracking-tight">Crea tu cuenta</h1>
+      <h1 className="display text-[1.75rem] font-semibold">Crea tu cuenta</h1>
       <p className="mt-1 text-muted">14 días gratis. Sin tarjeta.</p>
       <form
         className="mt-8 space-y-4"

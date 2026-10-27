@@ -26,9 +26,10 @@ const money = (v: number | null | undefined) => (v === null || v === undefined |
 const dateCL = (d: Date | null) => (d ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(d) : null);
 
 /** Clave de la línea, la misma del archivo del retailer */
-function lineKey(provider: string, o: NormalizedOrder, itemId: string, sku: string | null) {
+function lineKey(provider: string, o: NormalizedOrder, itemId: string, sku: string | null, subOrder: string | null) {
   if (provider === 'WALMART') return `${o.orderNumber ?? o.externalId}|${itemId}`;
-  if (provider === 'CENCOSUD') return `${o.orderNumber ?? o.externalId}|${sku ?? itemId}`;
+  // Paris: igual que el reporte de ventas, "N° sub-orden|SKU"
+  if (provider === 'CENCOSUD') return `${subOrder ?? o.orderNumber ?? o.externalId}|${sku ?? itemId}`;
   return itemId;
 }
 
@@ -41,7 +42,8 @@ export async function retailerIdFor(db: Database | Tx, code: string, name: strin
 
 /** Pasa una orden de la API a Ventas. Devuelve false si se omitió porque ya venía de un archivo */
 export async function orderToSales(tx: Tx, provider: string, retailerId: string, apiOrderId: string, o: NormalizedOrder): Promise<boolean> {
-  const numbers = [o.orderNumber, o.customerOrderId].filter((x): x is string => Boolean(x));
+  const subOrders = o.items.map((i) => i.subOrderNumber).filter((x): x is string => Boolean(x));
+  const numbers = [...new Set([o.orderNumber, o.customerOrderId, ...subOrders].filter((x): x is string => Boolean(x)))];
   if (!numbers.length) return false;
 
   // ¿Ya está cargada por archivo? Entonces manda el archivo
@@ -57,6 +59,23 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
     )
     .limit(1);
   if (fromFile) return false;
+
+  // Paris: si la orden no trae N° de sub-orden pero la misma orden ya está en Ventas con su sub-orden
+  // (otra respuesta de la API la trajo completa), no se duplica con el N° de la orden madre
+  if (provider === 'CENCOSUD' && o.items.length && o.items.every((i) => !i.subOrderNumber) && o.orderNumber) {
+    const [already] = await tx
+      .select({ id: salesRecords.id })
+      .from(salesRecords)
+      .where(
+        and(
+          eq(salesRecords.retailerId, retailerId),
+          eq(salesRecords.orderId, o.orderNumber),
+          sql`${salesRecords.orderNumber} <> ${o.orderNumber}`,
+        ),
+      )
+      .limit(1);
+    if (already) return true;
+  }
 
   const base = {
     retailerId,
@@ -95,13 +114,16 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
 
   const seen = new Map<string, number>();
   const rows = items.map((i) => {
-    let key = lineKey(provider, o, i.externalItemId, i.sellerSku);
+    // Paris: la venta queda con el N° de la sub-orden (el que trae la liquidación) y el de la orden madre como "orden id"
+    const sub = provider === 'CENCOSUD' ? (i.subOrderNumber ?? null) : null;
+    let key = lineKey(provider, o, i.externalItemId, i.sellerSku, sub);
     const n = (seen.get(key) ?? 0) + 1;
     seen.set(key, n);
     if (n > 1) key = `${key}|${n}`;
     const qty = Math.max(1, Math.round(i.quantity || 1));
     return {
       ...base,
+      ...(sub ? { orderNumber: cut(sub, 50), orderId: cut(o.orderNumber ?? o.externalId, 50) } : {}),
       externalItemId: cut(key, 50)!,
       sellerSku: cut(i.sellerSku, 60),
       productName: i.name,
@@ -111,6 +133,7 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
       unitPrice: money(i.unitPrice),
       shippingCost: money(i.shippingAmount),
       status: cut(i.status ?? o.status, 50),
+      deliveredAt: dateCL(i.deliveredAt ?? null),
       raw: { __origen: API_ORIGIN, apiOrderId, provider, item: (i.raw ?? null) as unknown } as Record<string, unknown>,
     };
   });
@@ -147,11 +170,25 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
         paidPrice: sql`excluded.paid_price`,
         unitPrice: sql`excluded.unit_price`,
         shippingCost: sql`excluded.shipping_cost`,
+        deliveredAt: sql`coalesce(excluded.delivered_at, ${salesRecords.deliveredAt})`,
         raw: sql`excluded.raw`,
       },
       // Nunca pisa una línea que vino de un archivo
       setWhere: sql`coalesce(${salesRecords.raw}->>'__origen', '') = ${API_ORIGIN}`,
     });
+  // Paris: con la orden ya guardada por sub-orden, se quita la copia con el N° de la madre (de cualquier sincronización)
+  const subs = rows.map((r) => r.orderNumber).filter((x): x is string => Boolean(x) && x !== o.orderNumber);
+  if (provider === 'CENCOSUD' && o.orderNumber && subs.length) {
+    await tx
+      .delete(salesRecords)
+      .where(
+        and(
+          eq(salesRecords.retailerId, retailerId),
+          sql`${salesRecords.raw}->>'__origen' = ${API_ORIGIN}`,
+          eq(salesRecords.orderNumber, o.orderNumber),
+        ),
+      );
+  }
   return true;
 }
 

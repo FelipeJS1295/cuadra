@@ -40,7 +40,15 @@ export class CompanyController {
   @Roles('ADMIN')
   @Patch('company')
   async saveCompany(@Body() body: unknown) {
-    const input = validate(z.object({ name: z.string().trim().min(2).max(120).optional(), legalName: optional(200), taxId: optional(12) }), body);
+    const input = validate(
+      z.object({
+        name: z.string().trim().min(2).max(120).optional(),
+        legalName: optional(200),
+        taxId: optional(12),
+        businessMode: z.enum(['REVENDEDOR', 'FABRICANTE']).optional(),
+      }),
+      body,
+    );
     await this.settings.saveCompany(input);
     return this.settings.company();
   }
@@ -65,6 +73,9 @@ export class CompanyController {
         nuboxUrl: optional(200),
         nuboxToken: optional(1000),
         nuboxApiKey: optional(500),
+        nuboxUser: optional(100),
+        nuboxSerie: optional(20),
+        nuboxPassword: optional(200),
       }),
       body,
     );

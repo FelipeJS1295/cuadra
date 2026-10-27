@@ -28,6 +28,8 @@ export interface SessionUser {
   /** Empresa actual (null en rutas @NoTenant o si aún no tiene empresas) */
   tenantId: string | null;
   tenantName: string | null;
+  /** Tipo de negocio de la empresa actual: REVENDEDOR · FABRICANTE */
+  businessMode: 'REVENDEDOR' | 'FABRICANTE';
   /** Rol en la empresa actual */
   role: UserRole;
 }

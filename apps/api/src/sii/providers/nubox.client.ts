@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { SettingsService } from '../../company/settings.service.js';
 import { SiiRejectedError, SiiUnknownError } from '../api-gateway.client.js';
+import { comunaCode } from '../comunas.js';
 import type { IssuedDoc, SalesSummaryRow } from './types.js';
 
 /**
@@ -19,6 +20,12 @@ import type { IssuedDoc, SalesSummaryRow } from './types.js';
  */
 
 const cut = (text: string, max: number) => text.replace(/\s+/g, ' ').trim().slice(0, max);
+/** Región y comuna como código (los pide Nubox en las facturas) */
+export function territory(comuna: string | null | undefined) {
+  const c = comunaCode(comuna);
+  return c ? { territorialDivisionLegalCode: c.region, territorialDivisionL2LegalCode: c.comuna } : {};
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface NuboxSale {
@@ -34,7 +41,7 @@ interface NuboxSale {
 }
 
 export interface NuboxDocInput {
-  tipo: 39 | 61;
+  tipo: 33 | 39 | 61;
   receptorRut: string;
   receptorNombre: string;
   receptorDireccion?: string | null;
@@ -136,7 +143,7 @@ export class NuboxClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  /** Emite una boleta (39) o nota de crédito (61) y espera su folio */
+  /** Emite una factura (33), boleta (39) o nota de crédito (61) y espera su folio */
   async emitir(input: NuboxDocInput): Promise<IssuedDoc> {
     // Nubox recibe el precio neto y el IVA aparte; el total queda igual al de la venta
     const total = Math.round(input.total);
@@ -150,6 +157,8 @@ export class NuboxClient {
         identification: { type: 1, value: input.receptorRut },
         mainActivity: cut(input.receptorGiro || 'Particular', 40),
         ...(input.receptorDireccion ? { address: cut(input.receptorDireccion, 70) } : {}),
+        ...(input.receptorComuna ? { city: cut(input.receptorComuna, 20) } : {}),
+        ...territory(input.receptorComuna),
       },
       saleType: { id: 1 },
       paymentForm: { id: 1 },

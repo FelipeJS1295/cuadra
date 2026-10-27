@@ -1,3 +1,4 @@
+import { PAYMENT_RULES } from '@cuadra/shared';
 import { Body, Controller, Get, Inject, NotFoundException, Param, ParseUUIDPipe, Patch } from '@nestjs/common';
 import { asc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -22,6 +23,8 @@ const updateSchema = z.object({
   commissionPct: percentSchema.optional(),
   paymentDays: z.coerce.number({ error: 'Días de pago inválidos' }).int().min(0, 'Mínimo 0 días').max(365, 'Máximo 365 días').optional(),
   paymentBase: z.enum(['ORDEN', 'DESPACHO']).optional(),
+  paymentRule: z.enum(PAYMENT_RULES).optional(),
+  paymentWeekday: z.coerce.number().int().min(0).max(6).optional(),
   contact: optionalText(500),
   commercialTerms: optionalText(2000),
   isActive: z.boolean().optional(),
@@ -49,6 +52,8 @@ export class RetailersController {
         commissionPct: sql<number>`${retailers.commissionPct}::float8`,
         paymentDays: retailers.paymentDays,
         paymentBase: retailers.paymentBase,
+        paymentRule: retailers.paymentRule,
+        paymentWeekday: retailers.paymentWeekday,
         contact: retailers.contact,
         commercialTerms: retailers.commercialTerms,
         isActive: retailers.isActive,

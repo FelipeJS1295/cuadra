@@ -67,6 +67,13 @@ export class SalesController {
     return this.sales.customerData(retailer, order);
   }
 
+  /** Lo que el retailer liquidó para una orden: producto, envío, comisión, despacho y otros cobros */
+  @Get('settlement')
+  settlement(@Query('retailer') retailer?: string, @Query('order') order?: string) {
+    if (!retailer || !order) throw new BadRequestException('Faltan el retailer y la orden');
+    return this.sales.settlementDetail(retailer, order);
+  }
+
   @Post('receipts')
   saveReceipt(@Body() body: unknown, @CurrentUser() user: SessionUser) {
     return this.sales.saveReceipt(validate(receiptSchema, body), user?.id ?? null);

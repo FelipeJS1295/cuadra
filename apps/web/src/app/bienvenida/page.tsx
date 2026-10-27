@@ -61,7 +61,7 @@ export default function WelcomePage() {
           return (
             <Card key={s.id} className={cn('overflow-hidden', open && 'border-brand-200 ring-2 ring-brand-100')}>
               <button onClick={() => setActive(open ? null : s.id)} className="flex w-full items-center gap-4 p-5 text-left">
-                <span className={cn('grid size-10 shrink-0 place-items-center rounded-full font-semibold', ok ? 'bg-brand-500 text-white' : 'bg-stone-100 text-muted')}>
+                <span className={cn('grid size-10 shrink-0 place-items-center rounded-full font-semibold', ok ? 'bg-money-500 text-white' : 'bg-stone-100 text-muted')}>
                   {ok ? <Check className="size-5" /> : i + 1}
                 </span>
                 <div className="flex-1">

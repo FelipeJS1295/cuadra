@@ -208,7 +208,8 @@ export class PurchasesImportService {
             warnings.push(`No se pudieron revisar las facturas pendientes de aceptar: ${err.message}`);
             return [];
           }
-          throw new BadGatewayException(`El SII respondió (vía ${(await this.provider.status()).providerName}): ${err.message}`);
+          const st = await this.provider.status();
+          throw new BadGatewayException(st.siiDirect ? err.message : `El SII respondió (vía ${st.providerName}): ${err.message}`);
         }
         throw err;
       }

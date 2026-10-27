@@ -41,8 +41,8 @@ export function UploadDialog({ kind, onClose }: { kind: 'ventas' | 'liquidacion'
     const r = upload.data;
     return (
       <Modal title={title} onClose={onClose} footer={<Button onClick={onClose}>Listo</Button>}>
-        <div className="flex items-start gap-3 rounded-xl bg-brand-50 p-4">
-          <CheckCircle2 className="mt-0.5 size-6 shrink-0 text-brand-600" />
+        <div className="flex items-start gap-3 rounded-xl bg-money-50 p-4">
+          <CheckCircle2 className="mt-0.5 size-6 shrink-0 text-money-600" />
           <div>
             <p className="font-semibold">Archivo leído: {r.rows} filas</p>
             <p className="text-sm text-ink">

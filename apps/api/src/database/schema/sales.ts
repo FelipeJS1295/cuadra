@@ -76,6 +76,8 @@ export const salesRecords = pgTable(
     fulfillment: varchar('fulfillment', { length: 50 }), // Tipo de fulfillment
     trackingCode: varchar('tracking_code', { length: 100 }), // Codigo de seguimiento
     dispatchDeadline: date('dispatch_deadline'), // Fecha limite de despacho
+    /** Fecha en que el cliente recibió el producto (la informa la API del retailer) */
+    deliveredAt: date('delivered_at'),
 
     /** Fila original completa del Excel, como respaldo */
     raw: jsonb('raw').$type<Record<string, unknown>>(),

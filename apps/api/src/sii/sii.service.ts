@@ -199,7 +199,7 @@ export class SiiService {
         .set({ status: 'REVISAR', receiptNumber: 'REVISAR', siiResponse: { error: message } })
         .where(eq(customerReceipts.id, receiptId));
       throw new BadGatewayException(
-        `No se pudo confirmar la boleta (${message}). Revisa en ${providerName === 'Nubox' ? 'Nubox' : 'el portal eBoleta del SII'} si quedó emitida: ` +
+        `No se pudo confirmar la boleta (${message}). Revisa en ${providerName.startsWith('Nubox') ? 'Nubox' : 'el portal eBoleta del SII'} si quedó emitida: ` +
           'si quedó, anota su N° en la orden; si no, quita el intento y vuelve a emitir.',
       );
     }
@@ -249,9 +249,9 @@ export class SiiService {
     const fileName = code === 'FALABELLA' ? `${label}_${r.receiptNumber}.pdf` : `${label}.pdf`;
     if (r.pdfData) return { data: Buffer.from(r.pdfData, 'base64'), fileName };
     // Emitida por Nubox
-    const nuboxId = this.provider.nuboxId(r.siiResponse);
-    if (nuboxId) {
-      const data = await this.provider.pdfNubox(nuboxId, r.documentType === 39 || r.documentType === 41);
+    const fromNubox = await this.provider.pdfFromRaw(r.siiResponse, r.documentType);
+    if (fromNubox) {
+      const data = fromNubox;
       await this.db.update(customerReceipts).set({ pdfData: data.toString('base64') }).where(eq(customerReceipts.id, r.id));
       return { data, fileName };
     }

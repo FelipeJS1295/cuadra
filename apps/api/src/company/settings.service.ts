@@ -15,6 +15,10 @@ export interface SiiSettings {
   nuboxUrl?: string;
   /** SimpleAPI: URL base (por si cambia) */
   simpleapiUrl?: string;
+  /** Nubox usuario API: usuario, N° de serie del sistema (opcional) y URL */
+  nuboxUser?: string;
+  nuboxSerie?: string;
+  nuboxClassicUrl?: string;
   /** RUT de la persona que entra al SII (usuario autorizado de la empresa) */
   usuarioRut?: string;
   /** Código de sucursal en eBoleta (opcional: si no, se consulta) */
@@ -65,6 +69,10 @@ export class SettingsService {
       nuboxUrl: (data.nuboxUrl || 'https://api.pyme.nubox.com/nbxpymapi-environment-pyme').replace(/\/+$/, '').replace(/\/v1$/, ''),
       nuboxToken: secrets.nuboxToken ?? null,
       nuboxApiKey: secrets.nuboxApiKey ?? null,
+      nuboxClassicUrl: (data.nuboxClassicUrl || 'https://api.nubox.com/Nubox.API').replace(/\/+$/, ''),
+      nuboxUser: data.nuboxUser ?? null,
+      nuboxSerie: data.nuboxSerie ?? null,
+      nuboxPassword: secrets.nuboxPassword ?? null,
     };
   }
 
@@ -85,10 +93,17 @@ export class SettingsService {
               [s.usuarioRut, 'RUT de la persona que entra al SII'],
               [s.clave, 'Clave del SII'],
             ]
-          : [
-              [s.nuboxToken, 'Token de partner de Nubox'],
-              [s.nuboxApiKey, 'API Key de la empresa en Nubox'],
-            ];
+          : s.provider === 'NUBOX_CLASICO'
+            ? [
+                [s.nuboxUser, 'Usuario API de Nubox'],
+                [s.nuboxPassword, 'Contraseña del usuario API'],
+                [s.emisorRut, 'RUT de la empresa'],
+                [s.usuarioRut, 'Tu RUT (el que emite en Nubox)'],
+              ]
+            : [
+                [s.nuboxToken, 'Token de partner de Nubox'],
+                [s.nuboxApiKey, 'API Key de la empresa en Nubox'],
+              ];
     return need.filter(([v]) => !v).map(([, label]) => label);
   }
 
@@ -102,6 +117,9 @@ export class SettingsService {
       nuboxUrl: s.nuboxUrl,
       nuboxToken: mask(s.nuboxToken ?? undefined),
       nuboxApiKey: mask(s.nuboxApiKey ?? undefined),
+      nuboxUser: s.nuboxUser,
+      nuboxSerie: s.nuboxSerie,
+      nuboxPassword: s.nuboxPassword ? '••••••' : null,
       emisorRut: s.emisorRut,
       usuarioRut: s.usuarioRut,
       sucursal: s.sucursal,
@@ -124,6 +142,9 @@ export class SettingsService {
     nuboxUrl?: string | null;
     nuboxToken?: string | null;
     nuboxApiKey?: string | null;
+    nuboxUser?: string | null;
+    nuboxSerie?: string | null;
+    nuboxPassword?: string | null;
   }) {
     const r = await this.row();
     const data = (r?.data ?? {}) as Record<string, unknown>;
@@ -133,28 +154,48 @@ export class SettingsService {
     if (input.apigatewayUrl !== undefined) sii.apigatewayUrl = input.apigatewayUrl || undefined;
     if (input.provider) sii.provider = input.provider;
     if (input.nuboxUrl !== undefined) sii.nuboxUrl = input.nuboxUrl || undefined;
+    if (input.nuboxUser !== undefined) sii.nuboxUser = input.nuboxUser?.trim() || undefined;
+    if (input.nuboxSerie !== undefined) sii.nuboxSerie = input.nuboxSerie?.trim() || undefined;
     const secrets = decryptSecrets(r?.secrets ?? null);
     if (input.token) secrets.apigatewayToken = input.token.trim();
     if (input.clave) secrets.siiClave = input.clave;
     if (input.simpleapiKey) secrets.simpleapiKey = input.simpleapiKey.trim();
     if (input.nuboxToken) secrets.nuboxToken = input.nuboxToken.trim().replace(/^Bearer\s+/i, '');
     if (input.nuboxApiKey) secrets.nuboxApiKey = input.nuboxApiKey.trim();
+    if (input.nuboxPassword) secrets.nuboxPassword = input.nuboxPassword;
     const values = { data: { ...data, sii }, secrets: encryptSecrets(secrets) };
     await this.db.insert(tenantSettings).values(values).onConflictDoUpdate({ target: tenantSettings.tenantId, set: values });
   }
 
   async company() {
     const t = await this.tenant();
-    return { id: t.id, name: t.name, legalName: t.legalName, taxId: t.taxId, plan: t.plan, status: t.status, trialEndsAt: t.trialEndsAt, onboarding: t.onboarding as Record<string, string> };
+    return {
+      id: t.id,
+      name: t.name,
+      legalName: t.legalName,
+      taxId: t.taxId,
+      businessMode: t.businessMode as 'REVENDEDOR' | 'FABRICANTE',
+      plan: t.plan,
+      status: t.status,
+      trialEndsAt: t.trialEndsAt,
+      onboarding: t.onboarding as Record<string, string>,
+    };
   }
 
-  async saveCompany(input: { name?: string; legalName?: string | null; taxId?: string | null }) {
+  /** Tipo de negocio de la empresa actual */
+  async businessMode(): Promise<'REVENDEDOR' | 'FABRICANTE'> {
+    const t = await this.tenant();
+    return t?.businessMode === 'FABRICANTE' ? 'FABRICANTE' : 'REVENDEDOR';
+  }
+
+  async saveCompany(input: { name?: string; legalName?: string | null; taxId?: string | null; businessMode?: 'REVENDEDOR' | 'FABRICANTE' }) {
     await this.base
       .update(tenants)
       .set({
         ...(input.name ? { name: input.name } : {}),
         ...(input.legalName !== undefined ? { legalName: input.legalName } : {}),
         ...(input.taxId !== undefined ? { taxId: siiRut(input.taxId) } : {}),
+        ...(input.businessMode ? { businessMode: input.businessMode } : {}),
       })
       .where(eq(tenants.id, this.tenantId()));
   }

@@ -1,5 +1,15 @@
 import { arr, findArray, findDeep, http, num, pick, str, toDate } from './util.js';
-import { ProviderError, type NormalizedItem, type NormalizedOrder, type NormalizedProduct, type ProviderConfig, type RetailProvider } from './types.js';
+import {
+  ProviderError,
+  type NormalizedItem,
+  type NormalizedOrder,
+  type NormalizedProduct,
+  type ProductChanges,
+  type ProviderConfig,
+  type RetailProvider,
+  type UpdateResult,
+  type UpdateTarget,
+} from './types.js';
 
 /**
  * Paris (Marketplace Cencosud). Documentación: https://developers.ecomm.cencosud.com
@@ -30,14 +40,23 @@ async function token(cfg: ProviderConfig): Promise<string> {
   return t;
 }
 
-async function get(cfg: ProviderConfig, path: string) {
+async function send(cfg: ProviderConfig, method: string, path: string, body?: unknown) {
   const t = await token(cfg);
   const { json } = await http(`${base(cfg)}${path}`, {
-    headers: { Authorization: `Bearer ${t}`, Accept: 'application/json', ...(cfg.settings.sellerId ? { 'x-seller-id': cfg.settings.sellerId } : {}) },
+    method,
+    headers: {
+      Authorization: `Bearer ${t}`,
+      Accept: 'application/json',
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(cfg.settings.sellerId ? { 'x-seller-id': cfg.settings.sellerId } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     timeoutMs: 90000,
   });
-  return json as Record<string, unknown>;
+  return (json ?? {}) as Record<string, unknown>;
 }
+
+const get = (cfg: ProviderConfig, path: string) => send(cfg, 'GET', path);
 
 function normalizeItem(i: Record<string, unknown>, n: number): NormalizedItem {
   const qty = num(pick(i, 'quantity', 'qty')) ?? 1;
@@ -59,15 +78,32 @@ function normalizeItem(i: Record<string, unknown>, n: number): NormalizedItem {
 function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
   // Las órdenes de Paris traen sub-órdenes (una por vendedor/despacho) con sus productos
   const subOrders = arr(pick(o, 'subOrders', 'suborders'));
-  const rawItems = subOrders.length ? subOrders.flatMap((s) => arr(pick(s, 'items', 'products'))) : arr(pick(o, 'items', 'products'));
-  const items = rawItems.map(normalizeItem);
+  // Cada línea guarda su sub-orden: es el N° que usan el reporte de ventas y la liquidación de Paris
+  const items = subOrders.length
+    ? subOrders.flatMap((s) => {
+        // El N° de sub-orden viene en cada producto ("subOrderNumber"); si no, en la sub-orden
+        const sub = str(pick(s, 'subOrderNumber', 'subOrderId', 'number'));
+        // Lo que pagó el cliente por el envío viene en la sub-orden ("cost"), no en cada producto:
+        // se anota en la primera línea de la sub-orden (así la boleta y la venta lo suman una vez)
+        const subShipping = num(pick(s, 'shippingCost', 'cost', 'shipping.cost'));
+        // Entrega real al cliente (la sub-orden la informa al llegar)
+        const deliveredAt = toDate(pick(s, 'effectiveArrivalDate'));
+        const items = arr(pick(s, 'items', 'products')).map((i, n) => ({
+          ...normalizeItem(i, n),
+          subOrderNumber: str(pick(i, 'subOrderNumber')) ?? sub,
+          deliveredAt,
+        }));
+        if (items.length && !items.some((i) => i.shippingAmount) && subShipping) items[0].shippingAmount = subShipping;
+        return items;
+      })
+    : arr(pick(o, 'items', 'products')).map((i, n) => ({ ...normalizeItem(i, n), subOrderNumber: str(pick(i, 'subOrderNumber')) }));
   const shipping =
     subOrders.reduce((n, s) => n + (num(pick(s, 'shippingCost', 'cost', 'shipping.cost')) ?? 0), 0) || num(pick(o, 'shippingCost', 'shipping.cost'));
   const productTotal = items.reduce((n, i) => n + (i.paidPrice ?? 0), 0);
   return {
     externalId: String(pick(o, 'id', 'orderId', 'originOrderNumber', 'orderNumber')),
     orderNumber: str(pick(o, 'originOrderNumber', 'orderNumber', 'subOrders.0.subOrderNumber', 'id')),
-    customerOrderId: str(pick(o, 'subOrders.0.subOrderNumber')),
+    customerOrderId: str(pick(o, 'subOrders.0.subOrderNumber', 'subOrders.0.items.0.subOrderNumber')),
     orderDate: toDate(pick(o, 'createdAt', 'originOrderDate', 'orderDate', 'created_at')),
     status: str(pick(o, 'status.name', 'status', 'subOrders.0.status.name')),
     customerName: str(pick(o, 'customer.name', 'customer.fullName', 'billingAddress.name', 'shippingAddress.name')),
@@ -95,7 +131,6 @@ export const paris: RetailProvider = {
     { key: 'baseUrl', label: 'URL de la API', default: 'https://api-developers.ecomm.cencosud.com' },
     { key: 'authPath', label: 'Ruta del token', default: '/v1/auth/apiKey', help: 'Ajustable si la documentación de Cencosud indica otra' },
     { key: 'ordersPath', label: 'Ruta de órdenes', default: '/v1/orders' },
-    { key: 'productsPath', label: 'Ruta de productos', default: '/v1/products' },
   ],
 
   async test(cfg) {
@@ -122,32 +157,234 @@ export const paris: RetailProvider = {
   },
 
   async products(cfg, progress) {
+    // 1) Productos (cada variante es un SKU que se vende)
+    const found = await pages(cfg, '/v2/products/search', 50, (p) => str(pick(p, 'id')), (n) => progress(`Paris: ${n} productos leídos…`));
+    // La búsqueda puede venir sin variantes: entonces se pide el detalle de cada producto
+    const full: Record<string, unknown>[] = [];
+    for (const [n, p] of found.entries()) {
+      const id = str(pick(p, 'id'));
+      if (arr(pick(p, 'variants')).length || !id) full.push(p);
+      else full.push(await productDetail(cfg, id).catch(() => p));
+      if (n % 20 === 19) progress(`Paris: detalle de ${n + 1} de ${found.length} productos…`);
+    }
+    // 2) Stock de todos los SKU
+    progress('Paris: leyendo stock…');
+    const stock = new Map<string, number>();
+    const stockRows = await pages(cfg, '/v2/stock', 100, (r) => str(pick(r, 'sku', 'skuSeller')), (n) => progress(`Paris: stock de ${n} SKU leído…`)).catch(
+      () => [] as Record<string, unknown>[],
+    );
+    for (const r of stockRows) {
+      const q = num(pick(r, 'quantity', 'stock', 'available'));
+      if (q === null) continue;
+      for (const k of [str(pick(r, 'sku')), str(pick(r, 'skuSeller', 'sellerSku'))]) if (k) stock.set(k, q);
+    }
     const out: NormalizedProduct[] = [];
-    const limit = 100;
-    for (let offset = 0; offset < 50000; offset += limit) {
-      const body = await get(cfg, `${cfg.settings.productsPath || '/v1/products'}?limit=${limit}&offset=${offset}`);
-      const page = findArray(body);
-      for (const p of page) {
-        const sku = str(pick(p, 'sellerSku', 'skuSeller', 'sku', 'variants.0.sellerSku'));
-        if (!sku) continue;
+    for (const p of full) {
+      const variants = arr(pick(p, 'variants'));
+      for (const v of variants.length ? variants : [{}]) {
+        const sellerSku = str(pick(v, 'skuSeller', 'sellerSku')) ?? str(pick(p, 'sellerSku'));
+        if (!sellerSku) continue;
+        const sku = str(pick(v, 'sku', 'id'));
+        const { list, sale } = pricesOf(arr(pick(v, 'prices')));
+        const medias = arr(pick(v, 'medias')).sort((a, b) => (num(pick(a, 'position')) ?? 0) - (num(pick(b, 'position')) ?? 0));
         out.push({
-          sellerSku: sku,
-          retailerSku: str(pick(p, 'skuId', 'id', 'productId')),
-          name: str(pick(p, 'name', 'productName', 'title')),
-          brand: str(pick(p, 'brand.name', 'brand')),
-          price: num(pick(p, 'price', 'listPrice', 'prices.listPrice')),
-          salePrice: num(pick(p, 'salePrice', 'offerPrice', 'prices.offerPrice')),
-          stock: num(pick(p, 'stock', 'quantity', 'inventory.quantity')),
-          status: str(pick(p, 'status.name', 'status')),
-          url: str(pick(p, 'url', 'link')),
-          imageUrl: str(pick(p, 'image', 'imageUrl', 'images.0.url', 'images.0')),
-          raw: p,
+          sellerSku,
+          retailerSku: sku,
+          name: str(pick(p, 'name')),
+          brand: attrValue(p, /^marca$|brand/i),
+          price: list,
+          salePrice: sale,
+          stock: stock.get(sku ?? '') ?? stock.get(sellerSku) ?? num(pick(v, 'stock', 'quantity')),
+          status: [str(pick(v, 'status', 'status.name')) ?? str(pick(p, 'status', 'status.name')), str(pick(p, 'statusApproval', 'statusApproval.name'))]
+            .filter(Boolean)
+            .join(' · ') || null,
+          url: str(pick(p, 'url', 'channels.0.url')),
+          imageUrl: str(pick(medias[0], 'src', 'url')),
+          description: attrValue(p, /descrip/i),
+          // El id del producto se necesita para modificar nombre y descripción
+          raw: { productId: str(pick(p, 'id')), product: { ...p, variants: undefined }, variant: v },
         });
       }
-      progress(`Paris: ${out.length} productos leídos…`);
-      const total = num(pick(body, 'count', 'total', 'totalCount'));
-      if (page.length < limit || (total !== null && offset + limit >= total)) break;
     }
+    progress(`Paris: ${out.length} SKU leídos`);
     return out;
   },
+
+  editable: ['stock', 'price', 'salePrice', 'name', 'description'],
+
+  async updateProduct(cfg, target, changes) {
+    const done: string[] = [];
+    const sku = target.retailerSku ?? target.sellerSku;
+    if (changes.stock !== undefined) {
+      // Documentado: POST /v2/stock { skus: [{ sku, quantity }] } con el SKU de Paris
+      const res = await send(cfg, 'POST', '/v2/stock', { skus: [{ sku, quantity: Math.max(0, Math.round(changes.stock)) }] });
+      const failed = rejected(res);
+      if (failed) return { status: 'RECHAZADO', message: `Stock: ${failed}` };
+      done.push(`stock ${changes.stock}`);
+    }
+    if (changes.price !== undefined || changes.salePrice !== undefined) {
+      await updatePrices(cfg, target, sku, changes);
+      done.push(changes.salePrice === null ? 'oferta quitada' : 'precio');
+    }
+    if (changes.name !== undefined || changes.description !== undefined) {
+      await updateContent(cfg, target, changes);
+      done.push([changes.name !== undefined && 'nombre', changes.description !== undefined && 'descripción'].filter(Boolean).join(' y '));
+    }
+    return { status: 'APLICADO', message: `Paris actualizó: ${done.join(', ')}` } satisfies UpdateResult;
+  },
 };
+
+/**
+ * Lee todas las páginas de un listado de Paris. La documentación dice que "offset" es el
+ * "número de página", pero no dice si parte en 0 o 1 ni si es en realidad N° de elementos:
+ * se detecta comparando la página 0 con la 1.
+ */
+async function pages(cfg: ProviderConfig, path: string, limit: number, keyOf: (r: Record<string, unknown>) => string | null, progress: (n: number) => void) {
+  const sep = path.includes('?') ? '&' : '?';
+  const fetchPage = async (offset: number) => findArray(await get(cfg, `${path}${sep}limit=${limit}&offset=${offset}`));
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  const add = (rows: Record<string, unknown>[]) => {
+    let fresh = 0;
+    for (const r of rows) {
+      const k = keyOf(r) ?? JSON.stringify(r).slice(0, 200);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(r);
+      fresh++;
+    }
+    return fresh;
+  };
+  const first = await fetchPage(0);
+  add(first);
+  progress(out.length);
+  if (first.length < limit) return out;
+  const second = await fetchPage(1);
+  const fresh = add(second);
+  progress(out.length);
+  // Ninguno nuevo: páginas desde 1 (0 y 1 son la misma) · casi todos repetidos: offset = N° de elementos
+  const mode: 'page' | 'items' = fresh > 0 && fresh < Math.min(second.length, limit / 2) ? 'items' : 'page';
+  let next = mode === 'items' ? limit : 2;
+  if (second.length < limit && mode === 'page' && fresh > 0) return out;
+  for (let guard = 0; guard < 2000; guard++) {
+    const rows = await fetchPage(next);
+    const n = add(rows);
+    progress(out.length);
+    if (rows.length < limit || n === 0) break;
+    next += mode === 'items' ? limit : 1;
+  }
+  return out;
+}
+
+async function productDetail(cfg: ProviderConfig, id: string) {
+  const body = await get(cfg, `/v2/products/${encodeURIComponent(id)}`);
+  return (pick(body, 'data', 'product') as Record<string, unknown> | null) ?? body;
+}
+
+/** Valor de un atributo del producto por nombre (ej: Descripción, Marca) */
+function attrValue(p: unknown, name: RegExp): string | null {
+  const a = arr(pick(p, 'attributes')).find((x) => name.test(String(pick(x, 'name') ?? '')));
+  return a ? str(pick(a, 'value', 'optionName')) : null;
+}
+
+/** Precio normal (el mayor) y de oferta (el menor, si hay más de uno y es distinto) */
+function pricesOf(prices: Record<string, unknown>[]) {
+  const values = prices.map((x) => num(pick(x, 'value'))).filter((x): x is number => x !== null && x > 0);
+  if (!values.length) return { list: null, sale: null };
+  const list = Math.max(...values);
+  const low = Math.min(...values);
+  return { list, sale: values.length > 1 && low < list ? low : null };
+}
+
+/** Si la respuesta trae errores por SKU, el texto; si no, null */
+function rejected(res: Record<string, unknown>): string | null {
+  const errors = arr(pick(res, 'errors', 'failed', 'data.errors', 'data.failed'));
+  if (!errors.length) return null;
+  return errors.map((e) => str(pick(e, 'message', 'error', 'detail')) ?? JSON.stringify(e)).join(' · ').slice(0, 400);
+}
+
+const typeCache = new Map<string, { types: Record<string, unknown>[]; store: string | null; until: number }>();
+
+/** Tipos de precio (normal / oferta) y lista de precios de la tienda, para armar el cambio de precio */
+async function priceSetup(cfg: ProviderConfig) {
+  const key = cfg.secrets.apiKey ?? '';
+  const hit = typeCache.get(key);
+  if (hit && hit.until > Date.now()) return hit;
+  const types = findArray(await get(cfg, '/v2/price-types'));
+  const stores = findArray(await get(cfg, '/v2/store-prices'));
+  const store = str(pick(stores.find((x) => /paris|default|general|principal/i.test(String(pick(x, 'name') ?? ''))) ?? stores[0], 'id'));
+  const value = { types, store, until: Date.now() + 3600000 };
+  typeCache.set(key, value);
+  return value;
+}
+
+const isSaleType = (name: string) => /oferta|offer|sale|promo|internet|descuento/i.test(name);
+
+/**
+ * POST /v2/prices/product/{sku} { prices: [...] }.
+ * Para quitar una oferta se manda solo el precio normal. La oferta necesita fechas.
+ */
+async function updatePrices(cfg: ProviderConfig, target: UpdateTarget, sku: string, changes: ProductChanges) {
+  const { types, store } = await priceSetup(cfg);
+  const current = arr(pick(target.raw, 'variant.prices'));
+  // El tipo "normal" es el del precio más alto que ya tiene el producto; si no, el que no es oferta
+  const top = current.reduce<Record<string, unknown> | null>((a, b) => ((num(pick(b, 'value')) ?? 0) > (num(pick(a, 'value')) ?? -1) ? b : a), null);
+  const listType = str(pick(top, 'type.id')) ?? str(pick(types.find((t) => !isSaleType(String(pick(t, 'name') ?? ''))), 'id'));
+  const saleType = str(pick(types.find((t) => isSaleType(String(pick(t, 'name') ?? '')) && str(pick(t, 'id')) !== listType), 'id'));
+  if (!listType) throw new ProviderError('Paris no informó los tipos de precio (/v2/price-types)');
+  const price = changes.price ?? target.price;
+  if (!price) throw new ProviderError('Falta el precio normal');
+  const prices: Record<string, unknown>[] = [{ value: Math.round(price), type: listType, ...(store ? { storePrice: store } : {}) }];
+  const sale = changes.salePrice === undefined ? target.salePrice : changes.salePrice;
+  if (sale) {
+    if (!saleType) throw new ProviderError('Paris no tiene un tipo de precio de oferta en /v2/price-types');
+    if (!changes.saleFrom || !changes.saleTo) throw new ProviderError('La oferta necesita fecha de inicio y de término');
+    prices.push({
+      value: Math.round(sale),
+      type: saleType,
+      ...(store ? { storePrice: store } : {}),
+      showFrom: `${changes.saleFrom}T00:00:00`,
+      showTo: `${changes.saleTo}T23:59:59`,
+    });
+  }
+  const res = await send(cfg, 'POST', `/v2/prices/product/${encodeURIComponent(sku)}`, { prices });
+  const failed = rejected(res);
+  if (failed) throw new ProviderError(`Precio: ${failed}`);
+}
+
+/**
+ * Nombre y descripción: PATCH /v2/products/{id} con TODA la información del producto
+ * (si falta algo, Paris lo borra). Se lee el producto actual y se cambia solo lo pedido.
+ */
+async function updateContent(cfg: ProviderConfig, target: UpdateTarget, changes: ProductChanges) {
+  const id = str(pick(target.raw, 'productId'));
+  if (!id) throw new ProviderError('No se conoce el id del producto en Paris: vuelve a traer los productos');
+  const p = await productDetail(cfg, id);
+  // Los atributos de lista (ej: Marca) se envían con el id de la opción; los de texto, con su valor
+  const attrs = arr(pick(p, 'attributes')).map((a) => ({ id: pick(a, 'id'), value: pick(a, 'optionId', 'value'), name: str(pick(a, 'name')) ?? '' }));
+  if (changes.description !== undefined) {
+    const d = attrs.find((a) => /descrip/i.test(a.name));
+    if (!d) throw new ProviderError('Este producto de Paris no tiene un atributo de descripción');
+    d.value = changes.description;
+  }
+  const body = {
+    product: {
+      name: changes.name ?? str(pick(p, 'name')),
+      sellerSku: str(pick(p, 'sellerSku')),
+      familyId: pick(p, 'family.id', 'familyId'),
+      category: pick(p, 'category.id', 'category'),
+      attributes: attrs.map(({ id: aid, value }) => ({ id: aid, value })),
+    },
+    variants: arr(pick(p, 'variants')).map((v) => ({
+      skuSeller: str(pick(v, 'skuSeller', 'sellerSku')),
+      status: str(pick(v, 'status', 'status.name')) ?? 'Enabled',
+      attributes: arr(pick(v, 'attributes')).map((a) => ({ id: pick(a, 'id'), value: pick(a, 'optionId', 'value') })),
+      medias: arr(pick(v, 'medias')).map((m, n) => ({
+        position: num(pick(m, 'position')) ?? n + 1,
+        src: str(pick(m, 'src', 'url')),
+        name: str(pick(m, 'name')) ?? (str(pick(m, 'src')) ?? '').split('/').pop()?.split('?')[0] ?? `imagen-${n + 1}`,
+      })),
+    })),
+  };
+  await send(cfg, 'PATCH', `/v2/products/${encodeURIComponent(id)}`, body);
+}

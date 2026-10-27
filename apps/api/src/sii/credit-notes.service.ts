@@ -78,7 +78,7 @@ export class CreditNotesService {
     const { rows } = await this.db.execute<CreditNoteRow>(sql`
       select n.id, r.code as retailer_code, r.name as retailer, n.order_number, n.receipt_number,
         n.receipt_date::text as receipt_date, n.ref_code, n.reason, n.amount_gross::float8 as amount_gross,
-        n.status, n.draft_code, n.folio, n.issued_at::text as issued_at, (n.mipyme_code is not null or n.sii_response->>'provider' = 'NUBOX') as has_pdf, n.receipt_type,
+        n.status, n.draft_code, n.folio, n.issued_at::text as issued_at, (n.mipyme_code is not null or n.sii_response->>'provider' in ('NUBOX', 'NUBOX_CLASICO')) as has_pdf, n.receipt_type,
         n.sii_response->>'error' as error, n.notes,
         (n.created_at at time zone 'America/Santiago')::date::text as created_at,
         (select pr.id::text from product_returns pr where pr.credit_note_id = n.id limit 1) as return_id
@@ -265,7 +265,7 @@ export class CreditNotesService {
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
       throw new BadGatewayException(
-        `${providerName === 'Nubox' ? 'Nubox' : 'El Portal MIPYME'} rechazó la nota de crédito: ${(err as Error).message}`,
+        `${providerName.startsWith('Nubox') ? 'Nubox' : 'El Portal MIPYME'} rechazó la nota de crédito: ${(err as Error).message}`,
       );
     }
     const today = todayCL();

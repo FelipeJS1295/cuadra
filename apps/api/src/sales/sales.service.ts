@@ -8,6 +8,7 @@ import {
   ReconciliationService,
   showsCustomerOrderId,
 } from '../settlements/reconciliation.service.js';
+import { SettingsService } from '../company/settings.service.js';
 import { SettlementsService } from '../settlements/settlements.service.js';
 
 /** IVA Chile */
@@ -33,6 +34,8 @@ export interface SaleWithMargin {
   orderLabel: string | null;
   orderDate: string | null;
   dispatchDeadline: string | null;
+  /** Cuándo recibió el cliente (si el retailer lo informa) */
+  deliveredAt: string | null;
   productName: string | null;
   status: string | null;
   cancelled: boolean;
@@ -50,7 +53,7 @@ export interface SaleWithMargin {
    *  null     sin factura ni costo cargado
    */
   cost: number | null;
-  costSource: 'FACTURA' | 'ESTIMADO' | null;
+  costSource: 'FACTURA' | 'RECETA' | 'ESTIMADO' | null;
   /** Costo con IVA (lo que se le paga al proveedor) */
   costGross: number | null;
   /** Estado global de la orden (ver @cuadra/shared order-status) */
@@ -140,6 +143,7 @@ type SaleGroup = {
   order_id: string | null;
   order_date: string | null;
   dispatch_deadline: string | null;
+  delivered_at: string | null;
   product_name: string | null;
   status: string | null;
   cancelled: boolean;
@@ -154,6 +158,7 @@ type SaleGroup = {
   wants_invoice: boolean;
   est_cost: number | null;
   cost_missing: boolean;
+  all_recipe: boolean;
   commission_pct: number | null;
   receipt_id: string | null;
   receipt_number: string | null;
@@ -185,10 +190,13 @@ export class SalesService {
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly settlements: SettlementsService,
     private readonly reconciliation: ReconciliationService,
+    private readonly settings: SettingsService,
   ) {}
 
   /** Ventas agrupadas por orden, con lo liquidado, lo pagado al proveedor, el IVA y el total */
   async listWithMargin(limit = LIMIT, range?: { from: string; to: string }): Promise<SaleWithMargin[]> {
+    // Fabricante: el costo sale de la receta de insumos, no de facturas de proveedor
+    const fab = (await this.settings.businessMode()) === 'FABRICANTE';
     // Rango de fechas de la orden (AAAA-MM-DD, ambos incluidos)
     const having = range
       ? sql`having min(s.order_date)::date between ${range.from}::date and ${range.to}::date`
@@ -203,6 +211,7 @@ export class SalesService {
           min(s.order_id) as order_id,
           min(s.order_date)::text as order_date,
           min(s.dispatch_deadline)::text as dispatch_deadline,
+          max(s.delivered_at)::text as delivered_at,
           string_agg(distinct s.product_name, ' + ') as product_name,
           string_agg(distinct s.status, ' / ') as status,
           array_agg(s.status) as statuses,
@@ -216,6 +225,7 @@ export class SalesService {
           -- Costo estimado: el costo (neto) del producto en Productos
           sum(pc.cost * s.quantity)::float8 as est_cost,
           bool_or(pc.cost is null) as cost_missing,
+          bool_and(coalesce(pc.has_recipe, false)) as all_recipe,
           max(r.commission_pct)::float8 as commission_pct,
           round(sum(coalesce(s.paid_price, s.unit_price, 0) * s.quantity
             * case when s.amounts_include_tax then 1 else ${sql.raw(String(VAT_RATE))} end))::float8 as sale_price,
@@ -237,7 +247,8 @@ export class SalesService {
         left join customer_receipts cr on cr.retailer_id = s.retailer_id and cr.order_number = s.order_number
         -- Producto del catálogo del retailer -> producto con costo (por SKU, o por nombre si no trae SKU)
         left join lateral (
-          select nullif(p.provisional_cost, 0) as cost
+          select nullif(p.provisional_cost, 0) as cost,
+            exists (select 1 from product_supplies ps where ps.product_id = p.id) as has_recipe
           from retailer_products rp
           join products p on p.id = rp.product_id
           where rp.retailer_id = s.retailer_id
@@ -261,8 +272,8 @@ export class SalesService {
       const m = money.get(`${g.retailer_code}|${g.order_number}`);
       const salePrice = g.cancelled ? 0 : (m?.salePrice ?? g.sale_price);
       const settlementNet = m?.paid && !(g.cancelled && m.settlementNet === 0) ? m.settlementNet : null;
-      const supplierGross = m?.hasDocuments ? m.supplierGross : null;
-      const supplierNet = m?.hasDocuments ? m.supplierNet : null;
+      const supplierGross = !fab && m?.hasDocuments ? m.supplierGross : null;
+      const supplierNet = !fab && m?.hasDocuments ? m.supplierNet : null;
       const commission = m?.paid ? m.commission : null;
       const shippingCharges = m?.paid ? m.shippingCharges : null;
 
@@ -276,9 +287,9 @@ export class SalesService {
       const vatCommission = commission !== null ? vatOf(-commission) : 0;
       // Cargos de envío/logística facturados por el retailer: también crédito
       const vatShipping = shippingCharges !== null ? vatOf(-shippingCharges) : 0;
-      const vat = vatSale !== null ? vatSale - vatPurchase - vatCommission - vatShipping : null;
+      let vat = vatSale !== null ? vatSale - vatPurchase - vatCommission - vatShipping : null;
 
-      const total =
+      let total =
         !g.cancelled && settlementNet !== null && supplierGross !== null && vat !== null
           ? settlementNet - supplierGross - vat
           : null;
@@ -287,7 +298,14 @@ export class SalesService {
       const estCost = !g.cost_missing && g.est_cost ? g.est_cost : null;
       const cost = supplierNet !== null ? supplierNet : estCost;
       const costGross = supplierGross !== null ? supplierGross : estCost !== null ? estCost * VAT_RATE : null;
-      const costSource = supplierNet !== null ? ('FACTURA' as const) : estCost !== null ? ('ESTIMADO' as const) : null;
+      const costSource =
+        supplierNet !== null
+          ? ('FACTURA' as const)
+          : estCost !== null
+            ? fab && g.all_recipe
+              ? ('RECETA' as const)
+              : ('ESTIMADO' as const)
+            : null;
 
       // Venta + envío que pagó el cliente
       const shippingPrice = g.cancelled ? 0 : (g.shipping_price ?? 0);
@@ -317,7 +335,14 @@ export class SalesService {
           : saleTotal !== null && costGross !== null && vatToPay !== null && settlementCharges !== null
             ? saleTotal - costGross - vatToPay - settlementCharges
             : null;
-      const utilityEstimated = utility !== null && !g.cancelled && (settlementEstimated || costSource !== 'FACTURA');
+      // Revendedor: es estimada mientras falte la factura del proveedor. Fabricante: el costo es el de
+      // los insumos, solo falta que el retailer pague
+      const utilityEstimated = utility !== null && !g.cancelled && (settlementEstimated || (!fab && costSource !== 'FACTURA'));
+      if (fab) {
+        // Venta "lista" del fabricante: pagada por el retailer y con costo de insumos
+        vat = vatToPay;
+        total = !g.cancelled && settlementNet !== null && costGross !== null && vatToPay !== null ? settlementNet - costGross - vatToPay : null;
+      }
 
       return {
         key: `${g.retailer_code}|${g.fulfillment ? 'F' : ''}|${g.order_number}`,
@@ -327,6 +352,7 @@ export class SalesService {
         orderLabel: showsCustomerOrderId(g.retailer_code) ? (g.order_id ?? g.order_number) : g.order_number,
         orderDate: g.order_date,
         dispatchDeadline: g.dispatch_deadline,
+        deliveredAt: g.delivered_at,
         productName: g.product_name,
         status: g.status,
         state,
@@ -424,7 +450,10 @@ export class SalesService {
     const billingTaxId = first('billing_tax_id') as string | null;
     const docType = String(first('document_type') ?? '').toUpperCase();
     const productTotal = Math.round(rows.reduce((n, r) => n + r.amount, 0));
-    const shippingTotal = Math.round(rows.reduce((n, r) => n + r.shipping, 0));
+    let shippingTotal = Math.round(rows.reduce((n, r) => n + r.shipping, 0));
+    // Si la venta no trae el envío (algunos reportes no lo informan), se toma de la liquidación:
+    // el retailer paga al vendedor lo que el cliente pagó por el envío
+    if (shippingTotal === 0) shippingTotal = await this.settlementShipping(retailerCode, orderNumber);
     const total = productTotal + shippingTotal;
 
     return {
@@ -526,6 +555,101 @@ export class SalesService {
    * la página Conciliación). Si el retailer cruza por línea (Falabella), se suman las
    * líneas de la misma orden.
    */
+  /**
+   * Detalle de la liquidación de una orden: cada movimiento que el retailer pagó o descontó.
+   * Se busca por N° de orden, N° secundario o id de línea (según cómo cruza cada retailer).
+   */
+  /** Envío pagado por el cliente según la liquidación de la orden (0 si no está liquidada) */
+  private async settlementShipping(retailerCode: string, orderNumber: string) {
+    const { rows } = await this.db.execute<{ shipping: number | null }>(sql`
+      with sale as (
+        select s.retailer_id, array_remove(array_agg(distinct s.order_number) || array_agg(distinct s.order_id) || array_agg(distinct s.external_item_id), null) as keys
+        from sales_records s join retailers r on r.id = s.retailer_id
+        where r.code = ${retailerCode.toUpperCase()} and s.order_number = ${orderNumber}
+        group by s.retailer_id
+      )
+      select sum(st.amount_gross)::float8 as shipping
+      from settlement_records st join sale on sale.retailer_id = st.retailer_id
+      where st.kind = 'SHIPPING' and st.amount_gross > 0 and (st.sale_item_id = any(sale.keys) or st.order_number = any(sale.keys))
+    `);
+    return Math.max(0, Math.round(rows[0]?.shipping ?? 0));
+  }
+
+  async settlementDetail(retailerCode: string, orderNumber: string) {
+    const { rows } = await this.db.execute<{
+      kind: string;
+      transaction_type: string | null;
+      transaction_category: string | null;
+      transaction_date: string | null;
+      amount_gross: number;
+      commission_pct: number | null;
+      payment_status: string | null;
+      statement_number: string | null;
+    }>(sql`
+      with sale as (
+        select s.retailer_id, array_remove(array_agg(distinct s.order_number) || array_agg(distinct s.order_id) || array_agg(distinct s.external_item_id), null) as keys
+        from sales_records s join retailers r on r.id = s.retailer_id
+        where r.code = ${retailerCode.toUpperCase()} and s.order_number = ${orderNumber}
+        group by s.retailer_id
+      )
+      select st.kind, st.transaction_type, st.transaction_category, st.transaction_date::text,
+        st.amount_gross::float8, st.commission_pct::float8, st.payment_status, st.statement_number
+      from settlement_records st join sale on sale.retailer_id = st.retailer_id
+      where st.sale_item_id = any(sale.keys) or st.order_number = any(sale.keys)
+      order by st.transaction_date, st.kind
+    `);
+    const product = rows.filter((r) => r.kind === 'PRODUCT_PAYMENT').reduce((n, r) => n + r.amount_gross, 0);
+    const label = (r: (typeof rows)[number]) => {
+      const a = r.amount_gross;
+      switch (r.kind) {
+        case 'PRODUCT_PAYMENT':
+          return a >= 0 ? 'Producto' : 'Devolución del producto';
+        case 'COMMISSION':
+          return a <= 0 ? 'Comisión' : 'Devolución de comisión';
+        case 'SHIPPING':
+          return a >= 0 ? 'Envío pagado por el cliente' : 'Despacho';
+        case 'LOGISTICS':
+          return 'Logística';
+        case 'PENALTY':
+          return 'Multa';
+        default:
+          return r.transaction_type || r.transaction_category || 'Otro movimiento';
+      }
+    };
+    const lines = rows.map((r) => ({
+      kind: r.kind,
+      label: label(r),
+      detail: r.transaction_type,
+      date: r.transaction_date,
+      amount: Math.round(r.amount_gross),
+      // % de la comisión sobre el producto (el que informa el retailer o el calculado)
+      pct:
+        r.kind === 'COMMISSION'
+          ? (r.commission_pct ?? (product ? Math.round((Math.abs(r.amount_gross) / product) * 1000) / 10 : null))
+          : null,
+      statement: r.statement_number,
+      status: r.payment_status,
+    }));
+    const ORDER_OF = (l: { label: string }) =>
+      ['Producto', 'Devolución del producto', 'Envío pagado por el cliente', 'Comisión', 'Devolución de comisión', 'Despacho', 'Logística', 'Multa'].indexOf(l.label) >>> 0;
+    // Mismo concepto repetido (ej: dos cobros de despacho) se muestra sumado
+    const merged = new Map<string, (typeof lines)[number]>();
+    for (const l of lines) {
+      const prev = merged.get(l.label);
+      if (!prev) merged.set(l.label, { ...l });
+      else {
+        prev.amount += l.amount;
+        if (l.kind === 'COMMISSION') prev.pct = product ? Math.round((Math.abs(prev.amount) / product) * 1000) / 10 : prev.pct;
+      }
+    }
+    return {
+      found: lines.length > 0,
+      lines: [...merged.values()].sort((a, b) => ORDER_OF(a) - ORDER_OF(b)),
+      total: Math.round(lines.reduce((n, l) => n + l.amount, 0)),
+      statements: [...new Set(lines.map((l) => l.statement).filter(Boolean))] as string[],
+    };
+  }
+
   private async moneyByOrder(): Promise<Map<string, Money>> {
     const map = new Map<string, Money>();
     const options = this.settlements.availableRetailers();

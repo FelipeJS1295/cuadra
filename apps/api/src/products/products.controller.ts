@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put } from '@nestjs/common';
 import { PRICING_CHANNELS } from '@cuadra/shared';
 import { z } from 'zod';
 import { Roles } from '../auth/decorators.js';
@@ -35,12 +35,20 @@ const createSchema = z.object({
 });
 const updateSchema = createSchema.partial();
 
+const recipeSchema = z.object({
+  items: z
+    .array(z.object({ supplyId: z.uuid('Insumo inválido'), quantity: z.coerce.number().min(0, 'La cantidad no puede ser negativa').max(1e6) }))
+    .max(200, 'Máximo 200 insumos por producto'),
+});
+
 /**
  * Productos MASTER (producto genérico, ej: "Seccional Richter") con su precio sugerido por retailer.
  *   GET    /api/products        lista, ordenada por nombre (incluye channels y precios sugeridos)
  *   POST   /api/products        crea  { skuMaster, name, provisionalCost, profitPct?, returnsPct?, channels? }
  *   PATCH  /api/products/:id    edita uno o varios campos
  *   DELETE /api/products/:id    elimina
+ *   GET    /api/products/:id/receta   insumos que lleva (fabricantes)
+ *   PUT    /api/products/:id/receta   { items: [{ supplyId, quantity }] } reemplaza la receta y recalcula el costo
  *
  * channels = { CENCOSUD: { commissionPct: "20", logisticsCost: "27990" }, WALMART: {...}, ... }
  */
@@ -69,7 +77,10 @@ export class ProductsController {
   async update(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
     const data = validate(updateSchema, body);
     try {
-      return await this.products.update(id, data);
+      await this.products.update(id, data);
+      // Si tiene receta, el costo lo manda la receta (no se puede cambiar a mano)
+      await this.products.recomputeCosts([id]);
+      return await this.products.findOne(id);
     } catch (err) {
       rethrowDuplicate(err, data.skuMaster ?? '');
     }
@@ -79,5 +90,17 @@ export class ProductsController {
   @Delete(':id')
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.products.remove(id);
+  }
+
+  @Get(':id/receta')
+  recipe(@Param('id', ParseUUIDPipe) id: string) {
+    return this.products.recipe(id);
+  }
+
+  @Roles('ADMIN') // costos y precios: solo administradores
+  @Put(':id/receta')
+  saveRecipe(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
+    const { items } = validate(recipeSchema, body);
+    return this.products.saveRecipe(id, items);
   }
 }

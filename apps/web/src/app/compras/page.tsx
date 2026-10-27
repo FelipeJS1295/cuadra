@@ -17,7 +17,7 @@ const STATUS = {
 };
 
 export default function PurchasesPage() {
-  const { canEdit } = useSession();
+  const { canEdit, isFactory } = useSession();
   const invoices = useQuery({ queryKey: ['invoices'], queryFn: api.listInvoices });
   const sii = useQuery({ queryKey: ['sii-status'], queryFn: api.siiStatus, staleTime: 300_000 });
   const [tab, setTab] = useState<'pagar' | 'todas'>('pagar');
@@ -35,10 +35,18 @@ export default function PurchasesPage() {
   return (
     <Page
       title="Compras"
-      intro="Las facturas de tus proveedores: cuánto les debes y a qué ventas corresponden."
+      intro={
+        isFactory
+          ? 'Las facturas de tus proveedores de insumos: cuánto les debes y cuánto les pagaste.'
+          : 'Las facturas de tus proveedores: cuánto les debes y a qué ventas corresponden.'
+      }
       help={
         <>
-          <p>Cada factura del proveedor se asigna a las ventas que cubre. Así Cuadra sabe cuánto te costó cada producto que vendiste.</p>
+          {isFactory ? (
+            <p>Como fabricas, el costo de cada venta sale de la receta de insumos (en Productos), no de estas facturas. Aquí llevas lo que debes y pagas.</p>
+          ) : (
+            <p>Cada factura del proveedor se asigna a las ventas que cubre. Así Cuadra sabe cuánto te costó cada producto que vendiste.</p>
+          )}
           <p>Si tienes el SII conectado, puedes traer las facturas solas desde el Registro de Compras.</p>
         </>
       }
@@ -50,9 +58,11 @@ export default function PurchasesPage() {
                 <CloudDownload className="size-4" /> Traer del SII
               </Button>
             )}
-            <Button onClick={() => setAssign({ invoice: null })}>
-              <Plus className="size-4" /> Agregar factura
-            </Button>
+            {!isFactory && (
+              <Button onClick={() => setAssign({ invoice: null })}>
+                <Plus className="size-4" /> Agregar factura
+              </Button>
+            )}
           </>
         )
       }
@@ -120,7 +130,9 @@ export default function PurchasesPage() {
                         <td className={td}>
                           <p className="font-medium">{i.supplier}</p>
                           <p className="text-xs text-muted">
-                            N° {i.documentNumber} · {i.orders} ventas{i.fromSii ? ' · del SII' : ''}
+                            N° {i.documentNumber}
+                            {isFactory ? '' : ` · ${i.orders} ventas`}
+                            {i.fromSii ? ' · del SII' : ''}
                           </p>
                         </td>
                         <td className={cn(td, 'num text-right')}>{clp(i.total)}</td>

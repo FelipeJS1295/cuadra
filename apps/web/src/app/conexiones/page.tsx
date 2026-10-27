@@ -1,12 +1,13 @@
 'use client';
 
+import { paymentTermsLabel } from '@cuadra/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, CheckCircle2, FileSpreadsheet, Landmark, Loader2, PlugZap, RefreshCw, Settings2, XCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useSession } from '@/components/session';
 import { Button, Card, ErrorBox, Field, inputCls, Loading, Modal, Page, Pill, shortDate, todayCL } from '@/components/ui';
-import { api, type RetailApiConnection, type RetailerMaster, type RetailSyncJob } from '@/lib/api';
+import { api, type PaymentRule, type RetailApiConnection, type RetailerMaster, type RetailSyncJob } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
 export default function ConnectionsPage() {
@@ -33,15 +34,16 @@ export default function ConnectionsPage() {
       }
     >
       <Card className="mb-6 flex flex-wrap items-center gap-4 p-5">
-        <span className={cn('grid size-11 place-items-center rounded-full', sii.data?.enabled ? 'bg-brand-50 text-brand-600' : 'bg-sun-50 text-sun-700')}>
+        <span className={cn('grid size-11 place-items-center rounded-full', sii.data?.enabled ? 'bg-money-50 text-money-600' : 'bg-sun-50 text-sun-700')}>
           <Landmark className="size-5" />
         </span>
         <div className="min-w-48 flex-1">
-          <p className="font-semibold">SII (boletas, notas de crédito y compras)</p>
+          <p className="font-semibold">SII (boletas, facturas, notas de crédito y compras)</p>
           <p className="text-sm text-muted">
             {sii.data?.enabled
               ? `Conectado con ${sii.data.providerName}: ${[
                   sii.data.can.boletas && 'emites boletas',
+                  sii.data.can.facturas && (sii.data.can.facturasDirectas ? 'facturas' : 'borradores de factura'),
                   sii.data.can.notasCredito && 'notas de crédito',
                   sii.data.can.compras && 'traes facturas de proveedores',
                   sii.data.can.cuadratura && 'comparas tus ventas con el SII',
@@ -69,7 +71,8 @@ export default function ConnectionsPage() {
                 <div>
                   <p className="text-lg font-semibold">{r.name}</p>
                   <p className="text-sm text-muted">
-                    Comisión {r.commissionPct ? `${r.commissionPct}%` : <span className="text-sun-700">sin definir</span>} · paga a {r.paymentDays} días
+                    Comisión {r.commissionPct ? `${r.commissionPct}%` : <span className="text-sun-700">sin definir</span>} ·{' '}
+                    {paymentTermsLabel({ rule: r.paymentRule, days: r.paymentDays, weekday: r.paymentWeekday, base: r.paymentBase === 'DESPACHO' ? 'DESPACHO' : 'ORDEN' })}
                   </p>
                 </div>
                 <button onClick={() => setEdit(r)} className="rounded-xl p-2 text-muted hover:bg-stone-100" title="Editar condiciones">
@@ -107,9 +110,26 @@ export default function ConnectionsPage() {
 function RetailerTerms({ r, onClose }: { r: RetailerMaster; onClose: () => void }) {
   const qc = useQueryClient();
   const { isAdmin } = useSession();
-  const [f, setF] = useState({ commissionPct: String(r.commissionPct ?? ''), paymentDays: String(r.paymentDays), paymentBase: r.paymentBase, taxId: r.taxId ?? '', isActive: r.isActive });
+  const [f, setF] = useState({
+    commissionPct: String(r.commissionPct ?? ''),
+    paymentRule: r.paymentRule,
+    paymentDays: String(r.paymentDays),
+    paymentWeekday: r.paymentWeekday,
+    paymentBase: r.paymentBase,
+    taxId: r.taxId ?? '',
+    isActive: r.isActive,
+  });
   const save = useMutation({
-    mutationFn: () => api.updateRetailer(r.id, { commissionPct: f.commissionPct || '0', paymentDays: Number(f.paymentDays) || 0, paymentBase: f.paymentBase, taxId: f.taxId || null, isActive: f.isActive }),
+    mutationFn: () =>
+      api.updateRetailer(r.id, {
+        commissionPct: f.commissionPct || '0',
+        paymentRule: f.paymentRule,
+        paymentDays: Number(f.paymentDays) || 0,
+        paymentWeekday: f.paymentWeekday,
+        paymentBase: f.paymentBase,
+        taxId: f.taxId || null,
+        isActive: f.isActive,
+      }),
     onSuccess: () => {
       for (const k of ['retailers', 'receivables', 'home']) qc.invalidateQueries({ queryKey: [k] });
       onClose();
@@ -136,15 +156,46 @@ function RetailerTerms({ r, onClose }: { r: RetailerMaster; onClose: () => void 
         <Field label="Comisión que te cobra (%)">
           <input value={f.commissionPct} onChange={(e) => setF({ ...f, commissionPct: e.target.value })} disabled={!isAdmin} className={inputCls} />
         </Field>
-        <Field label="Días en que te paga">
-          <input value={f.paymentDays} onChange={(e) => setF({ ...f, paymentDays: e.target.value })} disabled={!isAdmin} className={inputCls} />
-        </Field>
-        <Field label="Los días se cuentan desde">
-          <select value={f.paymentBase} onChange={(e) => setF({ ...f, paymentBase: e.target.value as 'ORDEN' | 'DESPACHO' })} disabled={!isAdmin} className={inputCls}>
-            <option value="ORDEN">La fecha de la venta</option>
-            <option value="DESPACHO">La fecha de despacho</option>
+        <Field label="Cómo te paga">
+          <select value={f.paymentRule} onChange={(e) => setF({ ...f, paymentRule: e.target.value as PaymentRule })} disabled={!isAdmin} className={inputCls}>
+            <option value="QUINCENAL">Quincenal: cierra el 14 y fin de mes</option>
+            <option value="HABILES_ENTREGA">Días hábiles después de la entrega</option>
+            <option value="SEMANAL">Una vez por semana</option>
+            <option value="DIAS">A días corridos</option>
           </select>
         </Field>
+        {f.paymentRule === 'SEMANAL' ? (
+          <Field label="Día en que paga" hint="Paga lo entregado al cliente la semana anterior">
+            <select value={f.paymentWeekday} onChange={(e) => setF({ ...f, paymentWeekday: Number(e.target.value) })} disabled={!isAdmin} className={inputCls}>
+              {['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'].map((d, i) => (
+                <option key={d} value={i}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <Field
+            label={f.paymentRule === 'DIAS' ? 'Días corridos' : 'Días hábiles'}
+            hint={
+              f.paymentRule === 'QUINCENAL'
+                ? 'Después del cierre de cada quincena'
+                : f.paymentRule === 'HABILES_ENTREGA'
+                  ? 'Después de que el cliente recibe el producto'
+                  : undefined
+            }
+          >
+            <input value={f.paymentDays} onChange={(e) => setF({ ...f, paymentDays: e.target.value })} disabled={!isAdmin} className={inputCls} />
+          </Field>
+        )}
+        {f.paymentRule === 'DIAS' && (
+          <Field label="Los días se cuentan desde">
+            <select value={f.paymentBase} onChange={(e) => setF({ ...f, paymentBase: e.target.value as 'ORDEN' | 'DESPACHO' })} disabled={!isAdmin} className={inputCls}>
+              <option value="ORDEN">La fecha de la venta</option>
+              <option value="DESPACHO">La fecha de despacho</option>
+            </select>
+          </Field>
+        )}
         <Field label="RUT del retailer" hint="Para reconocer sus facturas de comisión en el SII">
           <input value={f.taxId} onChange={(e) => setF({ ...f, taxId: e.target.value })} disabled={!isAdmin} className={inputCls} />
         </Field>
@@ -198,7 +249,7 @@ function SyncNow({ c }: { c: RetailApiConnection }) {
           <Loader2 className="size-3.5 animate-spin" /> {job?.message ?? 'Conectando…'}
         </span>
       ) : job ? (
-        <span className={job.status === 'ERROR' ? 'text-berry-700' : 'text-brand-700'}>{job.message}</span>
+        <span className={job.status === 'ERROR' ? 'text-berry-700' : 'text-money-700'}>{job.message}</span>
       ) : (
         <span>{c.lastOrdersSyncAt ? `Ventas traídas el ${shortDate(c.lastOrdersSyncAt)}` : 'Aún no se traen ventas'}</span>
       )}
@@ -242,6 +293,12 @@ function ApiConnect({ c, onClose }: { c: RetailApiConnection; onClose: () => voi
     }, 1500);
     return () => clearTimeout(t);
   }, [job, qc]);
+  const disconnect = useMutation({
+    mutationFn: () => api.disconnectRetail(c.provider),
+    onSuccess: () => {
+      for (const k of SALES_KEYS) qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
   // Campos avanzados (URL, rutas) escondidos para no confundir
   const basic = c.fields.filter((f) => !/url|path/i.test(f.key));
   return (
@@ -258,13 +315,39 @@ function ApiConnect({ c, onClose }: { c: RetailApiConnection; onClose: () => voi
         ))}
       </div>
       {isAdmin && (
-        <Button onClick={() => save.mutate()} loading={save.isPending}>
-          <PlugZap className="size-4" /> Conectar y traer ventas
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => save.mutate()} loading={save.isPending}>
+            <PlugZap className="size-4" /> Conectar y traer ventas
+          </Button>
+          {(c.enabled || c.status === 'OK') && !disconnect.isSuccess && (
+            <Button
+              variant="ghost"
+              className="ml-auto text-berry-700 hover:bg-berry-50"
+              loading={disconnect.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `¿Desconectar ${c.label} por API? Las ventas que llegaron por API se quitan de Ventas (menos las que ya tienen boleta o factura). Después subes el reporte de ventas por archivo.`,
+                  )
+                )
+                  disconnect.mutate();
+              }}
+            >
+              Desconectar y usar archivo
+            </Button>
+          )}
+        </div>
       )}
+      {disconnect.data && (
+        <p className="rounded-xl bg-money-50 p-3 text-sm text-money-700">
+          {c.label} quedó por archivo. Se quitaron {disconnect.data.removed} {disconnect.data.removed === 1 ? 'línea' : 'líneas'} de venta que llegaron por API
+          {disconnect.data.kept ? ` (se dejaron ${disconnect.data.kept} órdenes que ya tienen boleta o factura)` : ''}. Ahora sube el reporte de ventas en Ventas → Subir ventas.
+        </p>
+      )}
+      <ErrorBox error={disconnect.error} />
       <ErrorBox error={save.error} />
       {save.data && (
-        <div className={cn('space-y-1 rounded-xl p-4 text-sm', save.data.ok ? 'bg-brand-50 text-brand-700' : 'bg-berry-50 text-berry-700')}>
+        <div className={cn('space-y-1 rounded-xl p-4 text-sm', save.data.ok ? 'bg-money-50 text-money-700' : 'bg-berry-50 text-berry-700')}>
           <p className="flex items-center gap-2 font-medium">
             {save.data.ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />} {save.data.message}
           </p>

@@ -1,31 +1,90 @@
 @import 'tailwindcss';
 
-/* Cuadra: cálido, claro y con mucho aire. Verde = plata que entra, ámbar = pendiente, rojo = urgente */
+/*
+ * Cuadra · grafito y cobalto.
+ * Grafito para la estructura, cobalto para lo que se puede hacer (botones, enlaces, selección).
+ * Los colores de estado se reservan para la plata: verde = entró / ganancia, ámbar = pendiente,
+ * rojo = atrasado o pérdida.
+ */
+
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  font-stretch: 75% 100%;
+  src: url('/fonts/instrument-sans-latin.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  font-stretch: 75% 100%;
+  src: url('/fonts/instrument-sans-latin-ext.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+20A0-20AB, U+20AD-20C0, U+2113, U+A720-A7FF;
+}
+
 @theme {
-  --color-paper: #f7f5f0;
-  --color-ink: #1d2721;
-  --color-muted: #6b7570;
-  --color-line: #e6e2d9;
-  --color-brand-50: #eef7f1;
-  --color-brand-100: #d5ecdd;
-  --color-brand-200: #a9d8bb;
-  --color-brand-500: #2f8f5b;
-  --color-brand-600: #22774a;
-  --color-brand-700: #1a5e3a;
-  --color-brand-900: #0f3a24;
-  --color-sun-50: #fff7e8;
-  --color-sun-100: #ffecc7;
-  --color-sun-500: #e0951a;
-  --color-sun-700: #a7650b;
-  --color-berry-50: #fdf0ef;
-  --color-berry-100: #f9d9d6;
-  --color-berry-500: #d24a3c;
-  --color-berry-700: #a12f24;
-  --color-sky-50: #eef5fb;
-  --color-sky-500: #3b7fc4;
-  --color-sky-700: #285e94;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --radius-xl2: 1.25rem;
+  /* Superficies y texto */
+  --color-paper: #f5f6f8;
+  --color-ink: #1f2328;
+  --color-muted: #5f6873;
+  --color-line: #e3e6eb;
+  --color-line-strong: #cdd2d9;
+
+  /* Grafito (menú lateral, bloques oscuros) */
+  --color-graphite-700: #2a3038;
+  --color-graphite-800: #23282e;
+  --color-graphite-900: #1f2328;
+
+  /* Cobalto: acción y selección */
+  --color-brand-50: #eef3fd;
+  --color-brand-100: #dce6fb;
+  --color-brand-200: #b9ccf6;
+  --color-brand-500: #3d69dc;
+  --color-brand-600: #2b5bd7;
+  --color-brand-700: #2249b0;
+  --color-brand-900: #16306f;
+
+  /* Plata que entra, ganancia */
+  --color-money-50: #e9f5ef;
+  --color-money-100: #cdeadb;
+  --color-money-500: #1b9a6e;
+  --color-money-600: #12805c;
+  --color-money-700: #0e6a4c;
+
+  /* Pendiente */
+  --color-sun-50: #fdf6e7;
+  --color-sun-100: #f9e6bd;
+  --color-sun-500: #c98a12;
+  --color-sun-700: #8a5b08;
+
+  /* Atrasado, pérdida, error */
+  --color-berry-50: #fcefee;
+  --color-berry-100: #f6d6d3;
+  --color-berry-500: #c2362f;
+  --color-berry-700: #a32a24;
+
+  /* Información neutra (ayudas) */
+  --color-sky-50: #f1f4f8;
+  --color-sky-500: #51657d;
+  --color-sky-700: #3a4b60;
+
+  /* Grises neutros fríos (reemplazan a "stone", que es cálido) */
+  --color-stone-50: #f6f7f9;
+  --color-stone-100: #eef0f3;
+  --color-stone-200: #e3e6eb;
+  --color-stone-300: #c9ced6;
+  --color-stone-400: #9aa2ad;
+  --color-stone-500: #737c88;
+  --color-stone-600: #4a525c;
+
+  --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --radius-xl: 0.625rem;
+  --radius-2xl: 0.75rem;
 }
 
 html {
@@ -35,10 +94,40 @@ html {
 
 body {
   font-family: var(--font-sans);
+  font-size: 0.9375rem;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Números siempre alineados */
+/* Números alineados en columnas */
 .num {
   font-variant-numeric: tabular-nums;
+}
+
+/* Cifras grandes: un poco más angostas, como en un estado de cuenta */
+.figure {
+  font-variant-numeric: tabular-nums;
+  font-stretch: 86%;
+  letter-spacing: -0.015em;
+}
+
+/* Títulos: firmes y apretados */
+.display {
+  font-stretch: 88%;
+  letter-spacing: -0.022em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

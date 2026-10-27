@@ -79,7 +79,7 @@ export default function SalesPage() {
 
 function Sales() {
   const params = useSearchParams();
-  const { canEdit } = useSession();
+  const { canEdit, isFactory } = useSession();
   const qc = useQueryClient();
   const [month, setMonth] = useState(todayCL().slice(0, 7));
   const [filter, setFilter] = useState<Filter>((params.get('filtro') as Filter) ?? 'todas');
@@ -133,7 +133,8 @@ function Sales() {
       help={
         <>
           <p>
-            Una venta está <b>lista</b> cuando tiene boleta, el retailer ya te pagó (viene en su liquidación) y tienes la factura del proveedor.
+            Una venta está <b>lista</b> cuando tiene boleta, el retailer ya te pagó (viene en su liquidación) y{' '}
+            {isFactory ? 'tiene su costo de fabricación (receta de insumos).' : 'tienes la factura del proveedor.'}
           </p>
           <p>Con eso Cuadra calcula cuánto ganaste en esa venta. Haz clic en cualquier venta para verla paso a paso.</p>
         </>
@@ -197,7 +198,11 @@ function Sales() {
         </label>
       </div>
       <div className="mb-4">
-        <Tabs value={filter} onChange={setFilter} items={FILTERS.map((f) => ({ id: f.id, label: f.label, count: all.filter(f.match).length }))} />
+        <Tabs
+          value={filter}
+          onChange={setFilter}
+          items={FILTERS.filter((f) => !(isFactory && f.id === 'sin-factura')).map((f) => ({ id: f.id, label: f.label, count: all.filter(f.match).length }))}
+        />
       </div>
 
       <ErrorBox error={sales.error} />
@@ -231,7 +236,7 @@ function Sales() {
                   <th className={cn(thc, 'text-right whitespace-nowrap')} title="Lo que pagó el cliente: producto + envío, con IVA">
                     Venta + envío
                   </th>
-                  <th className={cn(thc, 'text-right')} title="Lo que le pagas al proveedor, con IVA">
+                  <th className={cn(thc, 'text-right')} title={isFactory ? 'Costo de los insumos, con IVA' : 'Lo que le pagas al proveedor, con IVA'}>
                     Costo
                   </th>
                   <th className={cn(thc, 'text-right whitespace-nowrap')} title="IVA de la venta − IVA del costo − IVA de la liquidación">
@@ -290,7 +295,7 @@ function Sales() {
                         ) : s.costGross !== null ? (
                           <>
                             <Amount value={s.costGross} estimated={s.costSource === 'ESTIMADO'} />
-                            <p className="text-xs text-muted">{s.costSource === 'FACTURA' ? 'factura proveedor' : 'según producto'}</p>
+                            <p className="text-xs text-muted">{s.costSource === 'FACTURA' ? 'factura proveedor' : s.costSource === 'RECETA' ? 'insumos' : 'según producto'}</p>
                           </>
                         ) : (
                           <span className="text-xs font-medium text-sun-700">Sin costo</span>
@@ -314,7 +319,7 @@ function Sales() {
                           <Dash />
                         ) : s.utility !== null ? (
                           <>
-                            <p className={cn('font-semibold', s.utility >= 0 ? 'text-brand-700' : 'text-berry-700')}>
+                            <p className={cn('font-semibold', s.utility >= 0 ? 'text-money-700' : 'text-berry-700')}>
                               {s.utilityEstimated && '≈ '}
                               {clp(s.utility)}
                             </p>
@@ -343,7 +348,7 @@ function Sales() {
                   <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.costGross)))}</td>
                   <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.vatToPay)))}</td>
                   <td className={cn(tdc, 'num text-right font-semibold')}>{clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.settlementCharges)))}</td>
-                  <td className={cn(tdc, 'num text-right font-semibold text-brand-700')}>
+                  <td className={cn(tdc, 'num text-right font-semibold text-money-700')}>
                     {rows.some((s) => s.utilityEstimated) && '≈ '}
                     {clp(sumOf(rows, (s) => (s.cancelled ? 0 : s.utility)))}
                   </td>

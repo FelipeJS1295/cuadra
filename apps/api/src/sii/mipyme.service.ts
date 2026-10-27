@@ -233,11 +233,10 @@ export class MipymeService {
     if (!row) throw new NotFoundException('El documento no existe');
     const prefixOf = kind === 'nota-credito' ? 'NC' : 'Guia';
     // Emitida por Nubox
-    const nuboxId = this.provider.nuboxId(row.raw);
-    if (nuboxId) {
-      const data = await this.provider.pdfNubox(nuboxId, false).catch((err) => gatewayError(err, 'No se pudo obtener el PDF de Nubox'));
-      return { data, fileName: `${prefixOf}_${row.folio ?? nuboxId}${row.order ? `_${row.order}` : ''}.pdf` };
-    }
+    const fromNubox = await this.provider
+      .pdfFromRaw(row.raw, kind === 'nota-credito' ? 61 : 52)
+      .catch((err) => gatewayError(err, 'No se pudo obtener el PDF de Nubox'));
+    if (fromNubox) return { data: fromNubox, fileName: `${prefixOf}_${row.folio ?? 'nubox'}${row.order ? `_${row.order}` : ''}.pdf` };
     if (!row.code) throw new BadRequestException('El documento aún no está emitido en el Portal MIPYME (o se anotó a mano)');
     const data = await this.gateway.pdfMipyme('emitidos', row.code).catch((err) => gatewayError(err, 'No se pudo obtener el PDF'));
     const prefix = kind === 'nota-credito' ? 'NC' : 'Guia';
@@ -293,6 +292,9 @@ export class MipymeService {
     if (p.total <= 0) throw new BadRequestException('La orden no tiene monto');
     const rut = siiRut(receptor.rut);
     if (!rut) throw new BadRequestException('RUT del receptor inválido');
+    // Con Nubox la factura se emite al tiro; con API Gateway queda como borrador en el Portal MIPYME
+    const status = await this.provider.status();
+    if (status.supports.facturasDirectas) return this.emitFacturaDirect(p, { ...receptor, rut }, userId, status.providerName);
     const { rut: emisor } = await this.gateway.config();
     const dte = {
       Encabezado: {
@@ -327,6 +329,75 @@ export class MipymeService {
       })
       .returning({ id: customerReceipts.id });
     return { id: row.id, draftCode: draft.draftCode };
+  }
+
+  /** Emite la factura de la orden en Nubox (queda EMITIDA con su folio). Misma reserva que las boletas */
+  private async emitFacturaDirect(
+    p: Awaited<ReturnType<SiiService['preview']>>,
+    receptor: FacturaReceptor,
+    userId: string | null,
+    providerName: string,
+  ) {
+    await this.provider.require('facturas', 'emitir facturas');
+    const [r] = await this.db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, p.retailerCode));
+    const data = await this.sales.customerData(p.retailerCode, p.orderNumber);
+    let receiptId: string;
+    try {
+      const [row] = await this.db
+        .insert(customerReceipts)
+        .values({
+          retailerId: r.id,
+          orderNumber: p.orderNumber,
+          receiptNumber: 'EMITIENDO',
+          totalGross: String(p.total),
+          documentType: 33,
+          status: 'EMITIENDO',
+          receptor,
+          createdBy: userId,
+        })
+        .returning({ id: customerReceipts.id });
+      receiptId = row.id;
+    } catch {
+      throw new ConflictException(`La orden ${p.orderNumber} ya tiene documento o se está emitiendo`);
+    }
+    // Nubox emite la factura con la fecha de hoy
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
+    try {
+      const result = await this.provider.emitirFactura({
+        fecha: today,
+        receptor: { ...receptor, email: data.customer.email },
+        item: p.item,
+        total: p.total,
+      });
+      await this.db
+        .update(customerReceipts)
+        .set({
+          receiptNumber: String(result.folio),
+          documentType: 33,
+          status: 'EMITIDA',
+          issuedAt: today,
+          pdfUrl: result.pdfUrl,
+          pdfData: result.pdfBase64,
+          siiResponse: result.raw,
+        })
+        .where(eq(customerReceipts.id, receiptId));
+      return { id: receiptId, folio: result.folio, draftCode: null };
+    } catch (err) {
+      const message = (err as Error).message;
+      if (err instanceof SiiRejectedError || (err as { status?: number }).status === 400) {
+        // Rechazada: no se emitió, se libera la orden para reintentar
+        await this.db.delete(customerReceipts).where(eq(customerReceipts.id, receiptId));
+        throw new BadGatewayException(`${providerName} rechazó la factura: ${message}`);
+      }
+      // No se sabe si quedó emitida: se marca para revisar (no se reintenta sola)
+      await this.db
+        .update(customerReceipts)
+        .set({ status: 'REVISAR', receiptNumber: 'REVISAR', siiResponse: { error: message } })
+        .where(eq(customerReceipts.id, receiptId));
+      throw new BadGatewayException(
+        `No se pudo confirmar la factura (${message}). Revisa en ${providerName} si quedó emitida: si quedó, anota su N° en la orden; si no, quita el intento y vuelve a emitir.`,
+      );
+    }
   }
 
   /** Quita una factura en borrador (del ERP y del portal) */

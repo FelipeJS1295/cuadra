@@ -97,7 +97,9 @@ export class HomeService {
         count: cxc.items.filter((i) => i.daysOverdue > 0).length,
         tone: 'amarillo',
       });
-    const noSupplier = valid.filter((r) => r.supplierGross === null);
+    const fab = (await this.settings.businessMode()) === 'FABRICANTE';
+    // Fabricante: no hay factura de proveedor por venta (el costo sale de los insumos)
+    const noSupplier = fab ? [] : valid.filter((r) => r.supplierGross === null);
     if (noSupplier.length && c.settlements > 0)
       tasks.push({
         id: 'proveedor',
@@ -112,8 +114,10 @@ export class HomeService {
       tasks.push({
         id: 'costos',
         title: `${c.without_cost} ${c.without_cost === 1 ? 'producto no tiene' : 'productos no tienen'} costo`,
-        why: 'Con el costo calculamos tu ganancia esperada antes de que llegue la factura.',
-        action: 'Poner costos',
+        why: fab
+          ? 'Arma su receta de insumos (o pon un costo) para saber cuánto ganas en cada venta.'
+          : 'Con el costo calculamos tu ganancia esperada antes de que llegue la factura.',
+        action: fab ? 'Armar recetas' : 'Poner costos',
         href: '/productos',
         count: c.without_cost,
         tone: 'azul',
@@ -131,7 +135,8 @@ export class HomeService {
       paid: sum((r) => r.settlementNet),
       owed: Math.round(cxc.totals.expected),
       owedOverdue: Math.round(cxc.totals.overdue),
-      supplierCost: sum((r) => r.supplierGross),
+      // Costo de lo vendido: facturas de proveedor (revendedor) o insumos (fabricante)
+      supplierCost: fab ? sum((r) => r.costGross) : sum((r) => r.supplierGross),
       vatToPay: vatMonth ? Math.round(vatMonth.balance) : null,
       profit: Math.round(done.reduce((n, r) => n + (r.total ?? 0), 0)),
       profitOrders: done.length,

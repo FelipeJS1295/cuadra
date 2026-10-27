@@ -1,5 +1,5 @@
 import { tenantId } from './tenant.js';
-import { numeric, pgTable, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import { index, numeric, pgTable, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { retailers } from './retailers.js';
 
 /**
@@ -53,12 +53,37 @@ export const supplies = pgTable('supplies', {
   /** Costo neto (sin IVA) por unidad del insumo */
   netCost: numeric('net_cost', { precision: 14, scale: 2 }).notNull().default('0'),
 
+  /** Unidad en que se mide: unidad, metro, kilo, litro… */
+  unit: varchar('unit', { length: 20 }).notNull().default('unidad'),
+
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true })
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date()),
 }, (t) => [uniqueIndex('supplies_tenant_sku_uq').on(t.tenantId, t.sku)]);
+
+/**
+ * Receta (para fabricantes): qué insumos y cuánto de cada uno lleva un producto.
+ * Costo del producto = suma de cantidad × costo neto del insumo.
+ */
+export const productSupplies = pgTable(
+  'product_supplies',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    supplyId: uuid('supply_id')
+      .notNull()
+      .references(() => supplies.id, { onDelete: 'cascade' }),
+    /** Cuánto lleva, en la unidad del insumo. Ej: 3.5 (metros de tela) */
+    quantity: numeric('quantity', { precision: 12, scale: 3 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('product_supplies_uq').on(t.productId, t.supplyId), index('product_supplies_supply_idx').on(t.supplyId)],
+);
 
 /**
  * Comisión y logística de cada producto master en cada retailer.

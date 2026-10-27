@@ -5,7 +5,7 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4200
 export type ReceiptStatus = 'REGISTRADA' | 'EMITIENDO' | 'EMITIDA' | 'REVISAR' | 'BORRADOR';
 
 /** ¿Está configurada la emisión de boletas en el SII (API Gateway)? */
-export type SiiProvider = 'APIGATEWAY' | 'SIMPLEAPI' | 'NUBOX';
+export type SiiProvider = 'APIGATEWAY' | 'SIMPLEAPI' | 'NUBOX' | 'NUBOX_CLASICO';
 
 /** Lo que Cuadra puede hacer con el SII según el proveedor */
 export interface SiiCapabilities {
@@ -17,6 +17,10 @@ export interface SiiCapabilities {
   comprasDetalle: boolean;
   cuadratura: boolean;
   facturasYGuias: boolean;
+  /** Facturas de venta desde Ventas */
+  facturas: boolean;
+  /** true: la factura queda emitida al tiro (Nubox) · false: borrador en el Portal MIPYME */
+  facturasDirectas: boolean;
 }
 
 export interface SiiStatus {
@@ -27,6 +31,8 @@ export interface SiiStatus {
   missing: string[];
   can: SiiCapabilities;
   supports: SiiCapabilities;
+  /** Compras y cuadratura se leen directo del SII (Nubox + clave del SII) */
+  siiDirect?: boolean;
 }
 
 /** Lo que se va a emitir para una orden */
@@ -128,7 +134,7 @@ export interface SaleRow {
   documentRequested: 'BOLETA' | 'FACTURA';
   /** Costo sin IVA: de la factura del proveedor o estimado con el costo del producto */
   cost: number | null;
-  costSource: 'FACTURA' | 'ESTIMADO' | null;
+  costSource: 'FACTURA' | 'RECETA' | 'ESTIMADO' | null;
   /** Costo con IVA (lo que se le paga al proveedor) */
   costGross: number | null;
   /** Estado global de la orden y el que informa el retailer */
@@ -387,6 +393,8 @@ export interface Product {
   returnsPct: string;
   /** Neto que debemos recibir por unidad */
   targetNet: number;
+  /** Receta de insumos (fabricantes): si tiene, el costo sale de ella */
+  recipe: { items: number; cost: number } | null;
   /** Por código de retailer: CENCOSUD, WALMART, FALABELLA, HITES */
   channels: Record<string, ProductChannel>;
 }
@@ -398,6 +406,29 @@ export interface Supply {
   name: string;
   /** Costo neto por unidad, como texto exacto: "4500.00" */
   netCost: string;
+  /** unidad, metro, kilo… */
+  unit: string;
+  /** En cuántas recetas se usa */
+  usedIn: number;
+}
+
+export type BusinessMode = 'REVENDEDOR' | 'FABRICANTE';
+
+/** Lo que el retailer liquidó para una orden */
+export interface SaleSettlement {
+  found: boolean;
+  lines: { kind: string; label: string; detail: string | null; date: string | null; amount: number; pct: number | null; statement: string | null; status: string | null }[];
+  /** Lo que se te pagó (suma de todo) */
+  total: number;
+  statements: string[];
+}
+
+/** Insumos que lleva un producto */
+export interface Recipe {
+  productId: string;
+  name: string;
+  items: { supplyId: string; sku: string; name: string; unit: string; unitCost: number; quantity: number; cost: number }[];
+  cost: number;
 }
 
 export interface ProductInput {
@@ -408,7 +439,7 @@ export interface ProductInput {
   returnsPct?: string;
   channels?: Record<string, { commissionPct: string | null; logisticsCost: string | null }>;
 }
-export type SupplyInput = { sku: string; name: string; netCost: string };
+export type SupplyInput = { sku: string; name: string; netCost: string; unit?: string };
 
 /** Retailer con catálogo cargable, con conteos */
 export interface CatalogRetailer {
@@ -549,6 +580,8 @@ export interface SessionUser {
   mustChangePassword: boolean;
   tenantId: string | null;
   tenantName: string | null;
+  /** Tipo de negocio de la empresa actual */
+  businessMode: BusinessMode;
   role: UserRole;
   tenants: MyTenant[];
 }
@@ -568,6 +601,7 @@ export interface Company {
   name: string;
   legalName: string | null;
   taxId: string | null;
+  businessMode: BusinessMode;
   plan: string;
   status: string;
   trialEndsAt: string | null;
@@ -581,6 +615,9 @@ export interface SiiConfig {
   nuboxUrl: string;
   nuboxToken: string | null;
   nuboxApiKey: string | null;
+  nuboxUser: string | null;
+  nuboxSerie: string | null;
+  nuboxPassword: string | null;
   missing: string[];
   emisorRut: string | null;
   usuarioRut: string | null;
@@ -648,6 +685,8 @@ export interface AdminTenant {
 export type PaymentBase = 'ORDEN' | 'DESPACHO';
 export type ChannelType = 'department_store' | 'supermarket' | 'marketplace' | 'ecommerce' | 'other';
 
+export type PaymentRule = 'DIAS' | 'QUINCENAL' | 'HABILES_ENTREGA' | 'SEMANAL';
+
 export interface RetailerMaster {
   id: string;
   code: string;
@@ -658,6 +697,9 @@ export interface RetailerMaster {
   commissionPct: number;
   paymentDays: number;
   paymentBase: PaymentBase;
+  paymentRule: PaymentRule;
+  /** SEMANAL: día de pago (0 domingo … 3 miércoles) */
+  paymentWeekday: number;
   contact: string | null;
   commercialTerms: string | null;
   isActive: boolean;
@@ -802,8 +844,14 @@ export interface Receivables {
     buckets: Record<AgingBucket, number>;
     paymentDays: number;
     paymentBase: PaymentBase;
+    paymentRule: PaymentRule;
+    /** Cómo paga, en palabras */
+    terms: string;
+    nextPayment: { date: string; amount: number; orders: number } | null;
     commissionPct: number;
   }[];
+  /** Lo que debería llegar en cada fecha, por retailer */
+  upcoming: { date: string; retailerCode: string; retailer: string; amount: number; orders: number; estimated: number }[];
   items: {
     retailerCode: string;
     retailer: string;
@@ -816,7 +864,11 @@ export interface Receivables {
     commissionPct: number;
     expected: number;
     baseDate: string | null;
+    deliveredAt: string | null;
     dueDate: string | null;
+    /** La fecha depende de una entrega que aún no ocurre (o sin fecha exacta) */
+    dueEstimated: boolean;
+    dueWhy: string;
     daysOverdue: number;
     daysToDue: number;
     bucket: AgingBucket;
@@ -855,8 +907,8 @@ export interface VatDocument {
 
 /** Lanza un Error con el mensaje que devuelve la API (ej: "Faltan las columnas: ...") */
 async function handle<T>(res: Response): Promise<T> {
-    // Sesión vencida o sin iniciar: se manda al login (salvo que ya estemos ahí)
-  if (res.status === 401 && typeof window !== 'undefined' && !['/login', '/registro'].includes(window.location.pathname)) {
+  // Sesión vencida o sin iniciar: se manda al login (salvo en la portada, que muestra la presentación)
+  if (res.status === 401 && typeof window !== 'undefined' && !['/', '/login', '/registro'].includes(window.location.pathname)) {
     window.location.href = '/login';
   }
   if (!res.ok) {
@@ -867,7 +919,7 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       /* respuesta sin JSON */
     }
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: res.status });
   }
   return res.json() as Promise<T>;
 }
@@ -987,6 +1039,35 @@ export interface RetailApiConnection {
   lastTestAt: string | null;
   lastOrdersSyncAt: string | null;
   lastProductsSyncAt: string | null;
+  /** Qué deja modificar el retailer por API */
+  editable: RetailEditable[];
+}
+
+export type RetailEditable = 'stock' | 'price' | 'salePrice' | 'name' | 'description';
+
+/** Cambios a enviar al retailer (precios con IVA; salePrice null = quitar la oferta) */
+export interface RetailProductChanges {
+  stock?: number;
+  price?: number;
+  salePrice?: number | null;
+  saleFrom?: string;
+  saleTo?: string;
+  name?: string;
+  description?: string;
+}
+
+export type RetailChangeStatus = 'ENVIANDO' | 'EN_PROCESO' | 'APLICADO' | 'RECHAZADO';
+
+export interface RetailProductChange {
+  id: string;
+  sellerSku: string;
+  changes: RetailProductChanges;
+  before: Partial<RetailProductChanges> | null;
+  status: RetailChangeStatus;
+  message: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RetailSyncJob {
@@ -1050,9 +1131,14 @@ export interface RetailApiProduct {
   status: string | null;
   url: string | null;
   imageUrl: string | null;
+  description: string | null;
   syncedAt: string;
   inCatalog: boolean;
   masterSku: string | null;
+  /** Fechas de la última oferta enviada desde Cuadra */
+  saleFrom: string | null;
+  saleTo: string | null;
+  lastChange: { status: RetailChangeStatus; message: string | null; at: string } | null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1087,7 +1173,7 @@ export const api = {
   // Empresa, inicio y asistente
   home: (month?: string) => request<HomeSummary>(`/home${month ? `?month=${month}` : ''}`),
   company: () => request<Company>('/company'),
-  saveCompany: (data: { name?: string; legalName?: string | null; taxId?: string | null }) =>
+  saveCompany: (data: { name?: string; legalName?: string | null; taxId?: string | null; businessMode?: BusinessMode }) =>
     request<Company>('/company', { method: 'PATCH', body: JSON.stringify(data) }),
   siiConfig: () => request<SiiConfig>('/company/sii'),
   saveSiiConfig: (data: {
@@ -1101,6 +1187,9 @@ export const api = {
     nuboxUrl?: string;
     nuboxToken?: string;
     nuboxApiKey?: string;
+    nuboxUser?: string;
+    nuboxSerie?: string;
+    nuboxPassword?: string;
   }) =>
     request<SiiConfig>('/company/sii', { method: 'PUT', body: JSON.stringify(data) }),
   testSii: () => request<{ ok: boolean; message: string }>('/company/sii/test', { method: 'POST' }),
@@ -1130,6 +1219,8 @@ export const api = {
     ),
 
   /** Boleta al cliente final de una orden (si ya tiene, se reemplaza) */
+  saleSettlement: (retailerCode: string, orderNumber: string) =>
+    request<SaleSettlement>(`/sales/settlement?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
   saveReceipt: (data: { retailerCode: string; orderNumber: string; receiptNumber: string; totalGross: string }) =>
     request<{ id: string }>('/sales/receipts', { method: 'POST', body: JSON.stringify(data) }),
   deleteReceipt: (id: string) => request<{ deleted: boolean }>(`/sales/receipts/${id}`, { method: 'DELETE' }),
@@ -1179,10 +1270,19 @@ export const api = {
     request<RetailSyncJob>(`/retail-api/${provider}/orders/sync`, { method: 'POST', body: JSON.stringify({ from, to }) }),
   syncRetailProducts: (provider: RetailProviderCode) => request<RetailSyncJob>(`/retail-api/${provider}/products/sync`, { method: 'POST' }),
   retailJob: (id: string) => request<RetailSyncJob>(`/retail-api/jobs/${id}`),
+  disconnectRetail: (provider: RetailProviderCode) =>
+    request<{ ok: boolean; removed: number; kept: number }>(`/retail-api/connections/${provider}`, { method: 'DELETE' }),
   retailOrders: (from: string, to: string, provider?: string) =>
     request<RetailApiOrder[]>(`/retail-api/orders?from=${from}&to=${to}${provider ? `&provider=${provider}` : ''}`),
   retailOrderRaw: (id: string) => request<unknown>(`/retail-api/orders/${id}/raw`),
   retailProducts: (provider?: string) => request<RetailApiProduct[]>(`/retail-api/products${provider ? `?provider=${provider}` : ''}`),
+  updateRetailProduct: (provider: RetailProviderCode, sellerSku: string, changes: RetailProductChanges) =>
+    request<{ id: string; status: RetailChangeStatus; message: string }>(`/retail-api/${provider}/products/update`, {
+      method: 'POST',
+      body: JSON.stringify({ sellerSku, changes }),
+    }),
+  retailProductChanges: (provider: RetailProviderCode, sku?: string) =>
+    request<RetailProductChange[]>(`/retail-api/${provider}/products/changes${sku ? `?sku=${encodeURIComponent(sku)}` : ''}`),
 
   // Portal MIPYME
   mipymeSync: () => request<MipymeSyncResult>('/sii/mipyme/sincronizar', { method: 'POST' }),
@@ -1192,7 +1292,7 @@ export const api = {
       `/sii/mipyme/facturas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
     ),
   createFactura: (data: { retailerCode: string; orderNumber: string; receptor: FacturaReceptor }) =>
-    request<{ id: string; draftCode: string }>('/sii/mipyme/facturas', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ id: string; draftCode: string | null; folio?: number }>('/sii/mipyme/facturas', { method: 'POST', body: JSON.stringify(data) }),
   deleteFactura: (id: string) => request<{ deleted: boolean; portal: string }>(`/sii/mipyme/facturas/${id}`, { method: 'DELETE' }),
   salesCheck: (month: string) => request<SalesCheck>(`/sii/mipyme/ventas/${month}`),
   creditNotePdfUrl: (id: string) => `${API_URL}/sii/mipyme/notas-credito/${id}/pdf`,
@@ -1274,6 +1374,9 @@ export const api = {
   updateSupply: (id: string, data: Partial<SupplyInput>) =>
     request<Supply>(`/supplies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteSupply: (id: string) => request<{ deleted: boolean }>(`/supplies/${id}`, { method: 'DELETE' }),
+  recipe: (productId: string) => request<Recipe>(`/products/${productId}/receta`),
+  saveRecipe: (productId: string, items: { supplyId: string; quantity: number }[]) =>
+    request<Recipe>(`/products/${productId}/receta`, { method: 'PUT', body: JSON.stringify({ items }) }),
 
     /** Catálogo retail */
   catalogRetailers: () => request<CatalogRetailer[]>('/catalog/retailers'),

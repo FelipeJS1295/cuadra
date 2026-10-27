@@ -39,7 +39,7 @@ export const ORDER_STATE_PATTERNS: [Exclude<OrderState, 'OTRO'>, string][] = [
   ['FALLIDA', 'fallid|failed|no entregad|undeliver|siniestr|perdid|lost'],
   ['ENTREGADA', 'entregad|delivered|finalizad|completad|complete'],
   ['EN_CAMINO', 'shipped|despachad|enviad|tr[aá]nsito|transit|en camino|en ruta'],
-  ['EN_PREPARACION', 'listo|ready|acknowledg|confirmad|prepar|pack|por despachar|por enviar|picking|facturad|invoiced|handling'],
+  ['EN_PREPARACION', 'listo|ready|acknowledg|confirmad|prepar|pack|por despachar|por enviar|picking|facturad|invoiced|handling|printed|label|etiquet'],
   ['PENDIENTE', 'pend|creat|nuev|new|unshipped|pagad|paid|recibid|abiert|open'],
 ];
 

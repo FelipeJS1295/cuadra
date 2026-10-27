@@ -1,8 +1,8 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
 import { PRICING_CHANNELS, suggestedPrice, targetNet, type PricingChannelCode } from '@cuadra/shared';
 import { DRIZZLE, type Database } from '../database/database.module.js';
-import { productChannelCosts, products, retailers } from '../database/schema/index.js';
+import { productChannelCosts, products, productSupplies, retailers, supplies } from '../database/schema/index.js';
 
 /** Nombre comercial de cada retailer, por si hay que crearlo (igual que en los adaptadores) */
 const RETAILER_NAMES: Record<PricingChannelCode, string> = {
@@ -49,6 +49,18 @@ export class ProductsService {
       .innerJoin(retailers, eq(productChannelCosts.retailerId, retailers.id))
       .where(inArray(productChannelCosts.productId, rows.map((r) => r.id)));
 
+    // Receta (fabricantes): cuántos insumos lleva y cuánto cuesta
+    const recipes = await this.db
+      .select({
+        productId: productSupplies.productId,
+        items: sql<number>`count(*)::int`,
+        cost: sql<number>`sum(${productSupplies.quantity} * ${supplies.netCost})::float8`,
+      })
+      .from(productSupplies)
+      .innerJoin(supplies, eq(supplies.id, productSupplies.supplyId))
+      .where(inArray(productSupplies.productId, rows.map((r) => r.id)))
+      .groupBy(productSupplies.productId);
+
     return rows.map((p) => {
       const cost = Number(p.provisionalCost);
       const profitPct = Number(p.profitPct);
@@ -83,6 +95,11 @@ export class ProductsService {
         skuMaster: p.skuMaster,
         name: p.name,
         provisionalCost: p.provisionalCost,
+        /** Receta de insumos (fabricantes). Si tiene, el costo sale de ella */
+        recipe: (() => {
+          const rc = recipes.find((x) => x.productId === p.id);
+          return rc ? { items: rc.items, cost: Math.round(rc.cost) } : null;
+        })(),
         profitPct: p.profitPct,
         returnsPct: p.returnsPct,
         /** Neto que debemos recibir por unidad */
@@ -151,5 +168,72 @@ export class ProductsService {
           set: { ...values, updatedAt: new Date() },
         });
     }
+  }
+
+  // ------------------------------------------------------------------ Receta (fabricantes)
+
+  /** Insumos que lleva un producto, con su costo */
+  async recipe(productId: string) {
+    const [p] = await this.db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId));
+    if (!p) throw new NotFoundException('Producto no encontrado');
+    const items = await this.db
+      .select({
+        supplyId: supplies.id,
+        sku: supplies.sku,
+        name: supplies.name,
+        unit: supplies.unit,
+        unitCost: supplies.netCost,
+        quantity: productSupplies.quantity,
+      })
+      .from(productSupplies)
+      .innerJoin(supplies, eq(supplies.id, productSupplies.supplyId))
+      .where(eq(productSupplies.productId, productId))
+      .orderBy(asc(supplies.name));
+    const rows = items.map((i) => ({
+      ...i,
+      unitCost: Number(i.unitCost),
+      quantity: Number(i.quantity),
+      cost: Math.round(Number(i.unitCost) * Number(i.quantity)),
+    }));
+    return { productId, name: p.name, items: rows, cost: rows.reduce((n, i) => n + i.cost, 0) };
+  }
+
+  /**
+   * Guarda la receta completa (reemplaza la anterior). El costo del producto pasa a ser
+   * el de la receta, así todo Cuadra (ventas, precios sugeridos, cuadratura) lo usa.
+   */
+  async saveRecipe(productId: string, items: { supplyId: string; quantity: number }[]) {
+    await this.db.transaction(async (tx) => {
+      const [p] = await tx.select({ id: products.id }).from(products).where(eq(products.id, productId));
+      if (!p) throw new NotFoundException('Producto no encontrado');
+      await tx.delete(productSupplies).where(eq(productSupplies.productId, productId));
+      const merged = new Map<string, number>();
+      for (const i of items) if (i.quantity > 0) merged.set(i.supplyId, (merged.get(i.supplyId) ?? 0) + i.quantity);
+      if (merged.size) {
+        await tx.insert(productSupplies).values([...merged].map(([supplyId, quantity]) => ({ productId, supplyId, quantity: String(quantity) })));
+      }
+    });
+    await this.recomputeCosts([productId]);
+    return this.recipe(productId);
+  }
+
+  /** Recalcula el costo de los productos con receta (al cambiar la receta o el costo de un insumo) */
+  async recomputeCosts(productIds?: string[]) {
+    await this.db.execute(sql`
+      update products p set provisional_cost = round(r.cost, 2), updated_at = now()
+      from (
+        select ps.product_id, sum(ps.quantity * s.net_cost) as cost
+        from product_supplies ps join supplies s on s.id = ps.supply_id
+        ${productIds ? sql`where ps.product_id in ${productIds}` : sql``}
+        group by ps.product_id
+      ) r
+      where p.id = r.product_id
+    `);
+  }
+
+  /** Productos que usan un insumo (para recalcular su costo) */
+  async productsUsing(supplyId: string) {
+    const rows = await this.db.select({ id: productSupplies.productId }).from(productSupplies).where(eq(productSupplies.supplyId, supplyId));
+    return rows.map((r) => r.id);
   }
 }

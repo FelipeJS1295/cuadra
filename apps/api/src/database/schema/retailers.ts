@@ -52,6 +52,17 @@ export const retailers = pgTable('retailers', {
    */
   paymentBase: varchar('payment_base', { length: 20 }).notNull().default('ORDEN'),
 
+  /**
+   * Cómo paga el retailer (ver @cuadra/shared payment-calendar):
+   *  DIAS             paymentDays corridos desde paymentBase
+   *  QUINCENAL        cierra el 14 y fin de mes; paga paymentDays hábiles después (Walmart)
+   *  HABILES_ENTREGA  paymentDays hábiles después de la entrega (Falabella)
+   *  SEMANAL          el paymentWeekday paga lo entregado la semana anterior (Paris)
+   */
+  paymentRule: varchar('payment_rule', { length: 20 }).notNull().default('DIAS'),
+  /** SEMANAL: día de pago (0 domingo … 3 miércoles … 6 sábado) */
+  paymentWeekday: integer('payment_weekday').notNull().default(3),
+
   /** Contacto comercial / KAM (nombre, correo, teléfono) */
   contact: text('contact'),
 

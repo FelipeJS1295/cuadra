@@ -52,7 +52,7 @@ export class AuthGuard implements CanActivate {
 
     // Empresas del usuario (activas)
     const mine = await this.db
-      .select({ tenantId: memberships.tenantId, role: memberships.role, name: tenants.name, status: tenants.status })
+      .select({ tenantId: memberships.tenantId, role: memberships.role, name: tenants.name, status: tenants.status, mode: tenants.businessMode })
       .from(memberships)
       .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
       .where(and(eq(memberships.userId, user.id), eq(memberships.isActive, true)))
@@ -62,7 +62,7 @@ export class AuthGuard implements CanActivate {
     // El superadmin puede entrar a cualquier empresa (para dar soporte) como DUENO
     if (!mine.some((m) => m.tenantId === wanted) && wanted && user.isSuperadmin) {
       const [t] = await this.db.select().from(tenants).where(eq(tenants.id, wanted));
-      if (t) current = { tenantId: t.id, role: 'DUENO', name: t.name, status: t.status };
+      if (t) current = { tenantId: t.id, role: 'DUENO', name: t.name, status: t.status, mode: t.businessMode };
     }
 
     req.user = {
@@ -73,6 +73,7 @@ export class AuthGuard implements CanActivate {
       mustChangePassword: user.mustChangePassword,
       tenantId: current?.tenantId ?? null,
       tenantName: current?.name ?? null,
+      businessMode: current?.mode === 'FABRICANTE' ? 'FABRICANTE' : 'REVENDEDOR',
       role: (current?.role ?? 'LECTURA') as UserRole,
     };
 

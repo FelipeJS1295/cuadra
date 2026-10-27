@@ -4,4 +4,6 @@
  * para que un cambio en el contrato de la API se detecte al compilar.
  */
 export * from './health.js';
-export * from './pricing.js';export * from './order-status.js';
+export * from './pricing.js';
+export * from './order-status.js';
+export * from './payment-calendar.js';

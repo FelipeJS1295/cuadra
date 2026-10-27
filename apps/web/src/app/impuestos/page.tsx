@@ -56,10 +56,10 @@ function Vat({ month }: { month: string }) {
   const pays = m.balance >= 0;
   return (
     <div className="space-y-6">
-      <Card className={cn('p-6', pays ? 'bg-white' : 'bg-brand-50')}>
+      <Card className={cn('p-6', pays ? 'bg-white' : 'bg-money-50')}>
         <p className="text-sm font-medium text-muted capitalize">{monthLabel(month)}</p>
         <p className="mt-1 text-lg">{pays ? 'Este mes pagas de IVA' : 'Este mes te queda IVA a favor'}</p>
-        <p className={cn('num text-5xl font-semibold tracking-tight', pays ? 'text-ink' : 'text-brand-700')}>{clp(Math.abs(m.balance))}</p>
+        <p className={cn('num text-5xl font-semibold tracking-tight', pays ? 'text-ink' : 'text-money-700')}>{clp(Math.abs(m.balance))}</p>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
           <div className="rounded-2xl bg-stone-50 p-4">
             <p className="flex items-center gap-2 font-medium">
@@ -79,7 +79,7 @@ function Vat({ month }: { month: string }) {
           </div>
           <div className="rounded-2xl bg-stone-50 p-4">
             <p className="flex items-center gap-2 font-medium">
-              <ArrowDownCircle className="size-5 text-brand-500" /> IVA que descuentas
+              <ArrowDownCircle className="size-5 text-money-500" /> IVA que descuentas
             </p>
             <p className="num mt-1 text-2xl font-semibold">{clp(m.credit)}</p>
             <ul className="mt-2 space-y-0.5 text-sm text-muted">
@@ -241,16 +241,16 @@ function CreditNoteDialog({ p, onClose }: { p: CreditNotePending; onClose: () =>
     return (
       <Modal title="Nota de crédito" onClose={onClose} footer={<Button onClick={onClose}>Listo</Button>}>
         {save.data?.folio ? (
-          <p className="rounded-xl bg-brand-50 p-3 text-sm text-brand-700">
+          <p className="rounded-xl bg-money-50 p-3 text-sm text-money-700">
             Nota de crédito N° {save.data.folio} emitida en {sii.data?.providerName ?? 'el SII'}.
           </p>
         ) : save.data ? (
           <div className="space-y-2 text-sm">
-            <p className="rounded-xl bg-brand-50 p-3 text-brand-700">Borrador N° {save.data.draftCode} creado en el portal del SII.</p>
+            <p className="rounded-xl bg-money-50 p-3 text-money-700">Borrador N° {save.data.draftCode} creado en el portal del SII.</p>
             <p>Entra a sii.cl → Factura electrónica → Sistema de facturación gratuito → Documentos borradores, ábrelo y presiona “Firmar y enviar”. Cuadra anotará el folio solo.</p>
           </div>
         ) : (
-          <p className="rounded-xl bg-brand-50 p-3 text-brand-700">Nota de crédito N° {folio} anotada.</p>
+          <p className="rounded-xl bg-money-50 p-3 text-money-700">Nota de crédito N° {folio} anotada.</p>
         )}
       </Modal>
     );

@@ -6,3 +6,5 @@ dist
 .DS_Store
 next-env.d.ts
 *.tsbuildinfo
+# Archivos de prueba con datos reales (no subir)
+_pruebas/

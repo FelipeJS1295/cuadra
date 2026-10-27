@@ -79,7 +79,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
       const missing = [!r.rut && 'RUT', !r.name && 'razón social', !r.activity && 'giro', !r.address && 'dirección', !r.commune && 'comuna'].filter(Boolean);
       if (missing.length) throw new Error(`Faltan datos de facturación (${missing.join(', ')}): hazla desde el detalle de la venta`);
       const res = await api.createFactura({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, receptor: r });
-      return `Borrador N° ${res.draftCode}`;
+      return res.folio ? `Factura N° ${res.folio}` : `Borrador N° ${res.draftCode}`;
     }
     const res = await api.draftCreditNote({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, amountGross: c.amount!, refCode: 1, reason });
     return res.folio ? `Nota N° ${res.folio}` : `Borrador N° ${res.draftCode}`;
@@ -107,7 +107,9 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
     kind === 'boletas'
       ? `Se emiten boletas reales en ${provider}, con la fecha de cada orden. No se pueden borrar: se anulan con nota de crédito.`
       : kind === 'facturas'
-        ? 'Se crean como borrador en el Portal MIPYME del SII con los datos de facturación que mandó el retailer. Después las firmas allá.'
+        ? sii?.can.facturasDirectas
+          ? `Se emiten facturas reales en ${provider} con los datos de facturación que mandó el retailer. No se pueden borrar: se anulan con nota de crédito.`
+          : 'Se crean como borrador en el Portal MIPYME del SII con los datos de facturación que mandó el retailer. Después las firmas allá.'
         : sii?.can.notasCreditoDirectas
           ? `Se emiten en ${provider} por lo que queda de cada boleta (la anulan completa).`
           : 'Se crean como borrador en el portal del SII por lo que queda de cada boleta (la anulan completa). Después las firmas allá.';
@@ -127,7 +129,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
               Cancelar
             </Button>
             <Button onClick={run} loading={running} disabled={ready.length === 0}>
-              {verb} {ready.length} {kind === 'boletas' ? 'boletas' : kind === 'facturas' ? 'facturas' : 'notas'}
+              {kind === 'facturas' && sii?.can.facturasDirectas ? 'Emitir' : verb} {ready.length} {kind === 'boletas' ? 'boletas' : kind === 'facturas' ? 'facturas' : 'notas'}
             </Button>
           </>
         )
@@ -144,7 +146,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
       )}
 
       {done && (
-        <p className={cn('rounded-xl p-3 text-sm font-medium', errCount ? 'bg-sun-50 text-sun-700' : 'bg-brand-50 text-brand-700')}>
+        <p className={cn('rounded-xl p-3 text-sm font-medium', errCount ? 'bg-sun-50 text-sun-700' : 'bg-money-50 text-money-700')}>
           {okCount} {okCount === 1 ? 'lista' : 'listas'}
           {errCount ? ` · ${errCount} con problemas (puedes reintentarlas cerrando y volviendo a elegirlas)` : ''}.
         </p>
@@ -162,7 +164,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
                   ) : r.state === 'trabajando' ? (
                     <Loader2 className="size-4 animate-spin text-sky-700" />
                   ) : r.state === 'ok' ? (
-                    <CheckCircle2 className="size-4 text-brand-600" />
+                    <CheckCircle2 className="size-4 text-money-600" />
                   ) : (
                     <XCircle className="size-4 text-berry-700" />
                   )}
@@ -170,7 +172,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
                 <span className="min-w-0 flex-1">
                   <span className="font-medium">{label(c.sale)}</span>
                   <span className="text-muted"> · {c.sale.customer ?? 'Sin nombre'}</span>
-                  {r?.message && <span className={cn('block text-xs', r.state === 'error' ? 'text-berry-700' : 'text-brand-700')}>{r.message}</span>}
+                  {r?.message && <span className={cn('block text-xs', r.state === 'error' ? 'text-berry-700' : 'text-money-700')}>{r.message}</span>}
                 </span>
                 <span className="num whitespace-nowrap">{clp(kind === 'notas' ? c.amount : c.sale.salePrice)}</span>
               </li>
@@ -213,7 +215,12 @@ export function SelectionBar({
   const can = sii?.can;
   const actions: { kind: BulkKind; label: string; allowed: boolean; why: string }[] = [
     { kind: 'boletas', label: 'Emitir boleta', allowed: Boolean(can?.boletas), why: sii?.enabled ? `${sii.providerName} no emite boletas` : 'Conecta el SII' },
-    { kind: 'facturas', label: 'Crear factura', allowed: Boolean(can?.facturasYGuias), why: 'Solo con API Gateway' },
+    {
+      kind: 'facturas',
+      label: can?.facturasDirectas ? 'Emitir factura' : 'Crear factura',
+      allowed: Boolean(can?.facturas),
+      why: sii?.enabled ? `${sii.providerName} no emite facturas` : 'Conecta el SII',
+    },
     { kind: 'notas', label: 'Nota de crédito', allowed: Boolean(can?.notasCredito), why: sii?.enabled ? `${sii.providerName} no hace notas de crédito` : 'Conecta el SII' },
   ];
   return (

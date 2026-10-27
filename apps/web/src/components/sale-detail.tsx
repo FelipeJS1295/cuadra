@@ -4,12 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Circle, FileText, Send } from 'lucide-react';
 import { useState } from 'react';
 import { api, type SaleRow } from '@/lib/api';
+import { ORDER_STATE_INFO } from '@cuadra/shared';
 import { cn } from '@/lib/cn';
 import { useSession } from './session';
 import { Button, clp, dmy, ErrorBox, Field, inputCls, Modal, parseAmount, Pill, typingAmount } from './ui';
 
 /** Qué le falta a una venta, en palabras */
-export function saleState(s: SaleRow): { label: string; tone: 'verde' | 'ambar' | 'rojo' | 'gris' | 'azul'; missing: string[] } {
+export function saleState(s: SaleRow, factory = false): { label: string; tone: 'verde' | 'ambar' | 'rojo' | 'gris' | 'azul'; missing: string[] } {
   if (s.cancelled) {
     const nc = s.receipt && ['EMITIDA', 'REGISTRADA'].includes(s.receipt.status) && s.receipt.creditNotes < s.receipt.totalGross;
     return { label: nc ? 'Cancelada: falta anular la boleta' : 'Cancelada', tone: nc ? 'rojo' : 'gris', missing: [] };
@@ -17,15 +18,49 @@ export function saleState(s: SaleRow): { label: string; tone: 'verde' | 'ambar' 
   const missing: string[] = [];
   if (!s.receipt) missing.push('boleta');
   if (s.settlementNet === null) missing.push('pago del retailer');
-  if (s.supplierGross === null) missing.push('factura del proveedor');
+  if (factory ? s.costGross === null : s.supplierGross === null) missing.push(factory ? 'costo de fabricación' : 'factura del proveedor');
   if (!missing.length) return { label: 'Lista', tone: 'verde', missing };
   return { label: `Falta ${missing.join(', ')}`, tone: !s.receipt ? 'rojo' : 'ambar', missing };
+}
+
+/** Detalle de la liquidación de la orden: producto, envío, comisión, despacho y otros cobros */
+function SettlementBreakdown({ retailerCode, orderNumber, fallback }: { retailerCode: string; orderNumber: string; fallback: string }) {
+  const q = useQuery({ queryKey: ['sale-settlement', retailerCode, orderNumber], queryFn: () => api.saleSettlement(retailerCode, orderNumber) });
+  if (q.isLoading) return <span>Cargando la liquidación…</span>;
+  if (!q.data?.found) return <span>{fallback}</span>;
+  const d = q.data;
+  return (
+    <div className="mt-2 rounded-xl border border-line bg-white text-sm text-ink">
+      <table className="w-full">
+        <tbody className="divide-y divide-line">
+          {d.lines.map((l) => (
+            <tr key={l.label}>
+              <td className="px-3 py-1.5">
+                {l.label}
+                {l.pct !== null && <span className="text-muted"> · {l.pct.toLocaleString('es-CL')}%</span>}
+              </td>
+              <td className={cn('num px-3 py-1.5 text-right', l.amount < 0 && 'text-berry-700')}>
+                {l.amount < 0 ? `− ${clp(-l.amount)}` : clp(l.amount)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot className="border-t-2 border-line">
+          <tr>
+            <td className="px-3 py-1.5 font-semibold">Se te pagó</td>
+            <td className="num px-3 py-1.5 text-right font-semibold">{clp(d.total)}</td>
+          </tr>
+        </tfoot>
+      </table>
+      {d.statements.length > 0 && <p className="px-3 pb-2 text-xs text-muted">Liquidación {d.statements.join(', ')}</p>}
+    </div>
+  );
 }
 
 function Step({ done, title, amount, children, negative }: { done: boolean; title: string; amount?: number | null; children?: React.ReactNode; negative?: boolean }) {
   return (
     <li className="flex gap-3">
-      {done ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-brand-500" /> : <Circle className="mt-0.5 size-5 shrink-0 text-stone-300" />}
+      {done ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-money-500" /> : <Circle className="mt-0.5 size-5 shrink-0 text-stone-300" />}
       <div className="flex-1">
         <div className="flex items-baseline justify-between gap-3">
           <p className={cn('font-medium', !done && 'text-muted')}>{title}</p>
@@ -70,44 +105,68 @@ export function SaleDetail({
     },
   });
   const customer = useQuery({ queryKey: ['customer', s.key], queryFn: () => api.customerData(s.retailerCode, s.orderNumber!), enabled: Boolean(s.orderNumber) });
-  const st = saleState(s);
+  const { isFactory } = useSession();
+  const st = saleState(s, isFactory);
   const fees = (s.commission ?? 0) + (s.shippingCharges ?? 0);
 
   return (
     <Modal wide title={`Venta ${s.orderLabel ?? s.orderNumber ?? ''}`} intro={`${s.retailer} · ${dmy(s.orderDate)} · ${s.productName ?? ''}`} onClose={onClose}>
       <div className="flex flex-wrap items-center gap-2">
         <Pill tone={st.tone}>{st.label}</Pill>
-        {s.status && <Pill>{s.status}</Pill>}
+        <span title={s.statusRaw ? `Retailer: ${s.statusRaw}` : undefined}>
+          <Pill tone={ORDER_STATE_INFO[s.state].tone}>{ORDER_STATE_INFO[s.state].label}</Pill>
+        </span>
       </div>
 
       <ol className="space-y-4 rounded-2xl bg-stone-50 p-5">
-        <Step done title="El cliente pagó" amount={s.salePrice}>
+        <Step done title="El cliente pagó" amount={s.saleTotal ?? s.salePrice}>
+          {s.shippingPrice > 0 && (
+            <span className="block">
+              Producto {clp(s.salePrice)} + envío {clp(s.shippingPrice)}
+            </span>
+          )}
           {customer.data && (
             <>
               {customer.data.customer.name ?? 'Cliente'} · RUT {customer.data.customer.rut ?? 'sin RUT'}
             </>
           )}
         </Step>
-        <Step done={s.settlementNet !== null} title={s.settlementNet !== null ? 'El retailer te depositó' : 'El retailer aún no te paga'} amount={s.settlementNet}>
-          {s.settlementNet !== null
-            ? `Ya descontó su comisión y cargos: ${clp(Math.abs(fees))}`
-            : 'Aparece cuando subas la liquidación donde viene esta venta.'}
+        <Step done={s.settlementNet !== null} title={s.settlementNet !== null ? 'El retailer te pagó' : 'El retailer aún no te paga'} amount={s.settlementNet}>
+          {s.settlementNet !== null && s.orderNumber ? (
+            <SettlementBreakdown retailerCode={s.retailerCode} orderNumber={s.orderNumber} fallback={`Ya descontó su comisión y cargos: ${clp(Math.abs(fees))}`} />
+          ) : (
+            'Aparece cuando subas la liquidación donde viene esta venta.'
+          )}
         </Step>
-        <Step done={s.supplierGross !== null} title={s.supplierGross !== null ? 'Le pagaste al proveedor' : 'Falta la factura del proveedor'} amount={s.supplierGross} negative>
-          {s.supplierGross === null && 'Asígnala en Compras para saber cuánto ganaste.'}
-        </Step>
+        {isFactory ? (
+          <Step done={s.costGross !== null} title={s.costGross !== null ? 'Costo de fabricación (insumos)' : 'Falta el costo de fabricación'} amount={s.costGross} negative>
+            {s.costGross === null
+              ? 'Arma la receta del producto en Productos para saber cuánto ganaste.'
+              : s.costSource === 'RECETA'
+                ? 'Según la receta de insumos del producto (con IVA).'
+                : 'Según el costo cargado en el producto (con IVA). Arma su receta para afinarlo.'}
+          </Step>
+        ) : (
+          <Step done={s.supplierGross !== null} title={s.supplierGross !== null ? 'Le pagaste al proveedor' : 'Falta la factura del proveedor'} amount={s.supplierGross} negative>
+            {s.supplierGross === null && 'Asígnala en Compras para saber cuánto ganaste.'}
+          </Step>
+        )}
         <Step done={s.vat !== null} title="IVA que te toca pagar" amount={s.vat} negative>
-          IVA de la venta − IVA de la compra − IVA de la comisión y envío
+          IVA de la venta − IVA {isFactory ? 'de los insumos' : 'de la compra'} − IVA de la comisión y envío
         </Step>
         <li className="border-t border-line pt-4">
           <div className="flex items-baseline justify-between">
             <p className="text-lg font-semibold">Ganaste</p>
-            <p className={cn('num text-2xl font-semibold', (s.total ?? 0) >= 0 ? 'text-brand-700' : 'text-berry-700')}>
+            <p className={cn('num text-2xl font-semibold', (s.total ?? 0) >= 0 ? 'text-money-700' : 'text-berry-700')}>
               {s.total !== null ? clp(s.total) : '—'}
               {s.marginPct !== null && <span className="ml-2 text-sm font-normal text-muted">{s.marginPct.toLocaleString('es-CL', { maximumFractionDigits: 1 })}%</span>}
             </p>
           </div>
-          {s.total === null && <p className="text-sm text-muted">Se calcula cuando la venta tenga el pago del retailer y la factura del proveedor.</p>}
+          {s.total === null && (
+            <p className="text-sm text-muted">
+              Se calcula cuando la venta tenga el pago del retailer y {isFactory ? 'el costo de fabricación' : 'la factura del proveedor'}.
+            </p>
+          )}
         </li>
       </ol>
 
@@ -149,7 +208,7 @@ export function SaleDetail({
                 </Button>
               </div>
             )}
-            {emit.isSuccess && <p className="text-sm text-brand-700">Boleta N° {emit.data.folio} emitida.</p>}
+            {emit.isSuccess && <p className="text-sm text-money-700">Boleta N° {emit.data.folio} emitida.</p>}
             {manual && (
               <div className="grid gap-3 sm:grid-cols-3">
                 <Field label="N° de boleta">

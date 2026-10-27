@@ -107,8 +107,36 @@ export const retailApiProducts = pgTable(
     status: varchar('status', { length: 60 }),
     url: varchar('url', { length: 500 }),
     imageUrl: varchar('image_url', { length: 500 }),
+    description: text('description'),
     raw: jsonb('raw'),
     syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('retail_api_products_uq').on(t.tenantId, t.provider, t.sellerSku)],
+);
+
+/**
+ * Cambios enviados desde Cuadra a un retailer (stock, precio, oferta, nombre, descripción).
+ * Queda el historial: qué se pidió, quién, y qué respondió el retailer.
+ */
+export const retailProductChanges = pgTable(
+  'retail_product_changes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    provider: varchar('provider', { length: 20 }).notNull(),
+    sellerSku: varchar('seller_sku', { length: 120 }).notNull(),
+    /** { stock, price, salePrice, saleFrom, saleTo, name, description } (solo lo que cambió) */
+    changes: jsonb('changes').notNull(),
+    /** Valores antes del cambio, para mostrar "de → a" */
+    before: jsonb('before'),
+    /** ENVIANDO · EN_PROCESO (el retailer lo procesa después) · APLICADO · RECHAZADO */
+    status: varchar('status', { length: 20 }).notNull(),
+    message: text('message'),
+    /** Id del proceso en el retailer (Falabella: FeedID) para consultar cómo terminó */
+    reference: varchar('reference', { length: 120 }),
+    createdBy: varchar('created_by', { length: 200 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('retail_product_changes_sku_idx').on(t.tenantId, t.provider, t.sellerSku, t.createdAt)],
 );

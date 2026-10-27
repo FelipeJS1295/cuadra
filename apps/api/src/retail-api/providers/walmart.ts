@@ -46,6 +46,17 @@ async function token(cfg: ProviderConfig): Promise<string> {
   return t;
 }
 
+async function put(cfg: ProviderConfig, path: string, body: unknown) {
+  const t = await token(cfg);
+  const { json } = await http(`${base(cfg)}${path}`, {
+    method: 'PUT',
+    headers: { ...headers(cfg), 'WM_SEC.ACCESS_TOKEN': t, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    timeoutMs: 60000,
+  });
+  return (json ?? {}) as Record<string, unknown>;
+}
+
 async function get(cfg: ProviderConfig, path: string) {
   const t = await token(cfg);
   const { json } = await http(`${base(cfg)}${path}`, { headers: { ...headers(cfg), 'WM_SEC.ACCESS_TOKEN': t }, timeoutMs: 90000 });
@@ -86,6 +97,11 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
       paidPrice: product,
       shippingAmount: shipping,
       status: statuses.map((s) => str(pick(s, 'status'))).filter(Boolean).join(', ') || null,
+      // Entregada: fecha del estado "Delivered" si Walmart la informa
+      deliveredAt: (() => {
+        const d = statuses.find((s) => /deliver/i.test(String(pick(s, 'status') ?? '')));
+        return d ? toDate(pick(d, 'statusDate', 'deliveredDate', 'trackingInfo.shipDateTime')) : null;
+      })(),
       raw: l,
     };
   });
@@ -193,5 +209,23 @@ export const walmart: RetailProvider = {
       cursor = next;
     }
     return out;
+  },
+
+  // Walmart Chile por API: stock y precio normal. Nombre, descripción y ofertas van por planilla en Seller Center
+  editable: ['stock', 'price'],
+
+  async updateProduct(cfg, target, changes) {
+    const done: string[] = [];
+    const sku = target.sellerSku;
+    if (changes.stock !== undefined) {
+      await put(cfg, `/v3/inventory?sku=${encodeURIComponent(sku)}`, { sku, quantity: { unit: 'EACH', amount: Math.max(0, Math.round(changes.stock)) } });
+      done.push(`stock ${changes.stock}`);
+    }
+    if (changes.price !== undefined) {
+      await put(cfg, '/v3/price', { sku, pricing: [{ currentPriceType: 'BASE', currentPrice: { currency: 'CLP', amount: Math.round(changes.price) } }] });
+      done.push('precio');
+    }
+    if (!done.length) throw new ProviderError('Walmart solo permite cambiar stock y precio por API');
+    return { status: 'APLICADO' as const, message: `Walmart actualizó: ${done.join(', ')}` };
   },
 };

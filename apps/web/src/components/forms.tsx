@@ -1,9 +1,9 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, CheckCircle2, ExternalLink, X, XCircle } from 'lucide-react';
+import { Check, CheckCircle2, ExternalLink, Factory, ShoppingCart, X, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, type SiiProvider } from '@/lib/api';
+import { api, type BusinessMode, type SiiProvider } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useSession } from './session';
 import { Button, ErrorBox, Field, inputCls, Loading, Pill } from './ui';
@@ -26,7 +26,8 @@ export function CompanyForm({ onSaved }: { onSaved?: () => void }) {
   });
   if (company.isLoading) return <Loading />;
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {company.data && <BusinessModePicker current={company.data.businessMode} />}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Nombre de fantasía">
           <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} disabled={!isAdmin} className={inputCls} />
@@ -44,9 +45,79 @@ export function CompanyForm({ onSaved }: { onSaved?: () => void }) {
           <Button onClick={() => save.mutate()} loading={save.isPending}>
             Guardar
           </Button>
-          {save.isSuccess && <span className="text-sm text-brand-700">Guardado</span>}
+          {save.isSuccess && <span className="text-sm text-money-700">Guardado</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+const MODES: { id: BusinessMode; title: string; icon: typeof Factory; text: string; points: string[] }[] = [
+  {
+    id: 'REVENDEDOR',
+    title: 'Revendedor',
+    icon: ShoppingCart,
+    text: 'Compras productos a proveedores y los vendes en los retailers.',
+    points: ['El costo de cada venta sale de la factura del proveedor', 'En Compras asignas cada factura a las ventas que cubre'],
+  },
+  {
+    id: 'FABRICANTE',
+    title: 'Fabricante',
+    icon: Factory,
+    text: 'Fabricas lo que vendes y se lo vendes directo a los retailers.',
+    points: ['El costo sale de los insumos de cada producto (su receta)', 'Las ventas no esperan factura de proveedor'],
+  },
+];
+
+/** Revendedor o fabricante: cambia de dónde sale el costo de cada venta */
+function BusinessModePicker({ current }: { current: BusinessMode }) {
+  const qc = useQueryClient();
+  const { isAdmin } = useSession();
+  const save = useMutation({
+    mutationFn: (businessMode: BusinessMode) => api.saveCompany({ businessMode }),
+    onSuccess: () => {
+      for (const k of ['company', 'me', 'sales', 'home', 'products', 'onboarding']) qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  return (
+    <div>
+      <p className="mb-2 text-sm font-medium">¿Cómo trabaja tu empresa?</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {MODES.map((m) => {
+          const active = (save.isPending ? save.variables : current) === m.id;
+          const Icon = m.icon;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              disabled={!isAdmin || save.isPending}
+              onClick={() => m.id !== current && save.mutate(m.id)}
+              className={cn(
+                'rounded-2xl border bg-white p-4 text-left transition',
+                active ? 'border-brand-500 ring-2 ring-brand-500/20' : 'border-line hover:border-ink/20',
+                !isAdmin && 'cursor-default',
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <span className={cn('grid size-9 place-items-center rounded-full', active ? 'bg-brand-50 text-brand-600' : 'bg-stone-100 text-stone-500')}>
+                  <Icon className="size-5" />
+                </span>
+                <span className="font-semibold">{m.title}</span>
+                {active && <Pill tone="verde">{save.isPending ? 'Guardando…' : 'Tu modalidad'}</Pill>}
+              </div>
+              <p className="mt-2 text-sm text-muted">{m.text}</p>
+              <ul className="mt-2 space-y-1 text-[13px]">
+                {m.points.map((p) => (
+                  <li key={p} className="flex gap-1.5">
+                    <Check className="mt-0.5 size-3.5 shrink-0 text-brand-600" /> {p}
+                  </li>
+                ))}
+              </ul>
+            </button>
+          );
+        })}
+      </div>
+      <ErrorBox error={save.error} />
     </div>
   );
 }
@@ -60,6 +131,9 @@ type SiiFields = {
   nuboxUrl: string;
   nuboxToken: string;
   nuboxApiKey: string;
+  nuboxUser: string;
+  nuboxSerie: string;
+  nuboxPassword: string;
 };
 
 /** Los proveedores con que Cuadra se conecta al SII y lo que permite cada uno */
@@ -97,16 +171,31 @@ const PROVIDERS: {
     ],
   },
   {
-    id: 'NUBOX',
-    name: 'Nubox',
+    id: 'NUBOX_CLASICO',
+    name: 'Nubox (usuario API)',
     site: 'https://www.nubox.com',
-    pitch: 'Si ya facturas con Nubox. Emite boletas y notas al tiro.',
+    pitch: 'Para planes de Nubox sin API de Integraciones. Entra con el usuario API.',
     can: [
       ['Emitir boletas', true],
       ['Notas de crédito (quedan emitidas)', true],
-      ['Traer facturas de proveedores', false],
+      ['Traer compras del SII (con tu clave)', true],
+      ['Comparar ventas con el SII (con tu clave)', true],
+      ['Emitir facturas (quedan emitidas)', true],
+      ['Guías de despacho', false],
+    ],
+  },
+  {
+    id: 'NUBOX',
+    name: 'Nubox',
+    site: 'https://www.nubox.com',
+    pitch: 'Nubox con API de Integraciones (token y API key). Emite y compara ventas.',
+    can: [
+      ['Emitir boletas', true],
+      ['Notas de crédito (quedan emitidas)', true],
+      ['Traer compras del SII (con tu clave)', true],
       ['Comparar tus ventas con el SII', true],
-      ['Facturas y guías de despacho', false],
+      ['Emitir facturas (quedan emitidas)', true],
+      ['Guías de despacho', false],
     ],
   },
 ];
@@ -117,11 +206,30 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
   const { isAdmin, canEdit } = useSession();
   const cfg = useQuery({ queryKey: ['sii-config'], queryFn: api.siiConfig });
   const [provider, setProvider] = useState<SiiProvider>('APIGATEWAY');
-  const [f, setF] = useState<SiiFields>({ usuarioRut: '', sucursal: '', token: '', clave: '', simpleapiKey: '', nuboxUrl: '', nuboxToken: '', nuboxApiKey: '' });
+  const [f, setF] = useState<SiiFields>({
+    usuarioRut: '',
+    sucursal: '',
+    token: '',
+    clave: '',
+    simpleapiKey: '',
+    nuboxUrl: '',
+    nuboxToken: '',
+    nuboxApiKey: '',
+    nuboxUser: '',
+    nuboxSerie: '',
+    nuboxPassword: '',
+  });
   useEffect(() => {
     if (!cfg.data) return;
     setProvider(cfg.data.provider);
-    setF((x) => ({ ...x, usuarioRut: cfg.data.usuarioRut ?? '', sucursal: cfg.data.sucursal ?? '', nuboxUrl: cfg.data.nuboxUrl ?? '' }));
+    setF((x) => ({
+      ...x,
+      usuarioRut: cfg.data.usuarioRut ?? '',
+      sucursal: cfg.data.sucursal ?? '',
+      nuboxUrl: cfg.data.nuboxUrl ?? '',
+      nuboxUser: cfg.data.nuboxUser ?? '',
+      nuboxSerie: cfg.data.nuboxSerie ?? '',
+    }));
   }, [cfg.data]);
   const secret = (k: keyof SiiFields) => (f[k] ? { [k]: f[k] } : {});
   const save = useMutation({
@@ -129,8 +237,10 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
       api.saveSiiConfig({
         provider,
         usuarioRut: f.usuarioRut,
-        ...(provider === 'APIGATEWAY' ? { sucursal: f.sucursal } : {}),
+        ...(provider === 'APIGATEWAY' || provider === 'NUBOX_CLASICO' ? { sucursal: f.sucursal } : {}),
         ...(provider === 'NUBOX' ? { nuboxUrl: f.nuboxUrl } : {}),
+        ...(provider === 'NUBOX_CLASICO' ? { nuboxUser: f.nuboxUser, nuboxSerie: f.nuboxSerie } : {}),
+        ...secret('nuboxPassword'),
         ...secret('token'),
         ...secret('clave'),
         ...secret('simpleapiKey'),
@@ -138,7 +248,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
         ...secret('nuboxApiKey'),
       }),
     onSuccess: () => {
-      setF((x) => ({ ...x, token: '', clave: '', simpleapiKey: '', nuboxToken: '', nuboxApiKey: '' }));
+      setF((x) => ({ ...x, token: '', clave: '', simpleapiKey: '', nuboxToken: '', nuboxApiKey: '', nuboxPassword: '' }));
       test.reset();
       for (const k of ['sii-config', 'sii-status', 'onboarding', 'home']) qc.invalidateQueries({ queryKey: [k] });
       onSaved?.();
@@ -157,7 +267,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
     <div className="space-y-5">
       <div>
         <p className="mb-2 text-sm font-medium">¿Con quién te conectas al SII?</p>
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {PROVIDERS.map((p) => {
             const active = p.id === provider;
             return (
@@ -222,6 +332,19 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
             </ol>
           </>
         )}
+        {provider === 'NUBOX_CLASICO' && (
+          <>
+            <p>Necesitas el &quot;Usuario API&quot; de Nubox (perfil Producción):</p>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+              <li>
+                En Nubox: <b>Agregar usuario API</b> → <b>Generar usuario y contraseña</b> → <b>Guardar</b> (la contraseña no se vuelve a mostrar).
+              </li>
+              <li>Tu RUT personal (el funcionario que emite en Nubox) y el código de la sucursal (si tienes una sola, es 1).</li>
+              <li>Prueba primero con una boleta y revísala en Nubox antes de emitir muchas.</li>
+              <li>Opcional: tu clave del SII, para traer las facturas de proveedores y comparar las ventas directo del SII.</li>
+            </ol>
+          </>
+        )}
         {provider === 'NUBOX' && (
           <>
             <p>Necesitas una cuenta de Nubox Factura y Administración. Ahí:</p>
@@ -252,7 +375,32 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
             <input type="password" autoComplete="new-password" value={f.simpleapiKey} onChange={set('simpleapiKey')} disabled={!isAdmin} className={inputCls} />
           </Field>
         )}
-        {provider !== 'NUBOX' && (
+        {provider === 'NUBOX_CLASICO' && (
+          <>
+            <Field label="Usuario API de Nubox">
+              <input value={f.nuboxUser} onChange={set('nuboxUser')} disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field label="Contraseña del usuario API" hint={c.nuboxPassword ? 'Guardada · escribe para cambiarla' : 'Se guarda cifrada'}>
+              <input type="password" autoComplete="new-password" value={f.nuboxPassword} onChange={set('nuboxPassword')} disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field label="Tu RUT (el funcionario que emite en Nubox)">
+              <input value={f.usuarioRut} onChange={set('usuarioRut')} placeholder="12.345.678-9" disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field label="Código de sucursal" hint="Si tienes una sola sucursal en Nubox, es 1">
+              <input value={f.sucursal} onChange={set('sucursal')} placeholder="1" disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field label="N° de serie del sistema (opcional)" hint="Si lo dejas vacío, se toma el que entrega Nubox al conectar">
+              <input value={f.nuboxSerie} onChange={set('nuboxSerie')} disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field
+              label="Tu clave del SII (opcional)"
+              hint={c.clave ? 'Guardada · escribe para cambiarla' : 'Con tu RUT de arriba y esta clave, Cuadra trae las compras y compara las ventas directo del SII'}
+            >
+              <input type="password" autoComplete="new-password" value={f.clave} onChange={set('clave')} disabled={!isAdmin} className={inputCls} />
+            </Field>
+          </>
+        )}
+        {provider !== 'NUBOX' && provider !== 'NUBOX_CLASICO' && (
           <>
             <Field label="Tu RUT personal (el que usas en el SII)">
               <input value={f.usuarioRut} onChange={set('usuarioRut')} placeholder="12.345.678-9" disabled={!isAdmin} className={inputCls} />
@@ -275,6 +423,12 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
             <Field label="API Key de la empresa en Nubox" hint={saved(c.nuboxApiKey, 'Guardada')}>
               <input type="password" autoComplete="new-password" value={f.nuboxApiKey} onChange={set('nuboxApiKey')} disabled={!isAdmin} className={inputCls} />
             </Field>
+            <Field label="Tu RUT personal (opcional)" hint="Para traer las compras directo del SII">
+              <input value={f.usuarioRut} onChange={set('usuarioRut')} placeholder="12.345.678-9" disabled={!isAdmin} className={inputCls} />
+            </Field>
+            <Field label="Tu clave del SII (opcional)" hint={c.clave ? 'Guardada · escribe para cambiarla' : 'Se guarda cifrada'}>
+              <input type="password" autoComplete="new-password" value={f.clave} onChange={set('clave')} disabled={!isAdmin} className={inputCls} />
+            </Field>
             <Field label="URL de la API de Nubox" hint="Viene lista; cámbiala solo si Nubox te dio otra" className="sm:col-span-2">
               <input value={f.nuboxUrl} onChange={set('nuboxUrl')} disabled={!isAdmin} className={inputCls} />
             </Field>
@@ -296,7 +450,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
         )}
         {savedHere ? (
           c.configured ? (
-            <span className="text-sm text-brand-700">Conectado con {c.providerName}</span>
+            <span className="text-sm text-money-700">Conectado con {c.providerName}</span>
           ) : (
             <span className="text-sm text-muted">Falta: {c.missing.join(', ')}</span>
           )
@@ -307,7 +461,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
         )}
       </div>
       {test.data && (
-        <p className={`flex items-start gap-2 rounded-xl p-3 text-sm ${test.data.ok ? 'bg-brand-50 text-brand-700' : 'bg-berry-50 text-berry-700'}`}>
+        <p className={`flex items-start gap-2 rounded-xl p-3 text-sm ${test.data.ok ? 'bg-money-50 text-money-700' : 'bg-berry-50 text-berry-700'}`}>
           {test.data.ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> : <XCircle className="mt-0.5 size-4 shrink-0" />}
           {test.data.message}
         </p>

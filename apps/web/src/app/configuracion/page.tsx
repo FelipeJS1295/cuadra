@@ -198,7 +198,7 @@ function Account() {
         <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!f.current || f.next.length < 8}>
           Cambiar contraseña
         </Button>
-        {save.isSuccess && <span className="text-sm text-brand-700">Listo</span>}
+        {save.isSuccess && <span className="text-sm text-money-700">Listo</span>}
       </div>
     </div>
   );

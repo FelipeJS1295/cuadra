@@ -13,7 +13,7 @@ const refreshKeys = ['invoices', 'invoice', 'sales', 'home', 'reconciliation', '
 /** Detalle de una factura del proveedor: a qué ventas corresponde y sus pagos */
 export function InvoiceDetail({ invoice, onClose, onAssign }: { invoice: PurchaseInvoice; onClose: () => void; onAssign: () => void }) {
   const qc = useQueryClient();
-  const { canEdit } = useSession();
+  const { canEdit, isFactory } = useSession();
   const d = useQuery({ queryKey: ['invoice', invoice.id], queryFn: () => api.getInvoice(invoice.id) });
   const sii = useQuery({ queryKey: ['sii-status'], queryFn: api.siiStatus, staleTime: 300_000 });
   const [amount, setAmount] = useState('');
@@ -47,7 +47,7 @@ export function InvoiceDetail({ invoice, onClose, onAssign }: { invoice: Purchas
               <p className="text-xs text-muted">Pagado</p>
               <p className="num text-lg font-semibold">{clp(x.paid)}</p>
             </div>
-            <div className={cn('rounded-xl p-3', x.balance > 0 ? 'bg-sun-50' : 'bg-brand-50')}>
+            <div className={cn('rounded-xl p-3', x.balance > 0 ? 'bg-sun-50' : 'bg-money-50')}>
               <p className="text-xs text-muted">Falta pagar</p>
               <p className="num text-lg font-semibold">{clp(x.balance)}</p>
             </div>
@@ -57,7 +57,7 @@ export function InvoiceDetail({ invoice, onClose, onAssign }: { invoice: Purchas
             <div className="mb-2 flex items-center justify-between">
               <h3 className="font-semibold">Ventas que cubre ({x.lines.length})</h3>
               {canEdit && (
-                <Button size="sm" variant="ghost" onClick={onAssign}>
+                <Button size="sm" variant="ghost" onClick={onAssign} className={isFactory ? 'hidden' : undefined}>
                   + Asignar ventas
                 </Button>
               )}
@@ -169,7 +169,7 @@ export function AssignDialog({ invoice, onClose }: { invoice?: PurchaseInvoice |
   if (save.isSuccess) {
     return (
       <Modal title="Factura asignada" onClose={onClose} footer={<Button onClick={onClose}>Listo</Button>}>
-        <p className="flex items-center gap-2 rounded-xl bg-brand-50 p-4 text-brand-700">
+        <p className="flex items-center gap-2 rounded-xl bg-money-50 p-4 text-money-700">
           <CheckCircle2 className="size-5" /> La factura N° {save.data.documentNumber} quedó asignada a {save.data.lines} ventas.
         </p>
       </Modal>
@@ -327,7 +327,7 @@ export function SiiImportDialog({ onClose }: { onClose: () => void }) {
       {preview.isLoading && <Loading label="Consultando el SII…" />}
       <ErrorBox error={preview.error ?? save.error} />
       {save.isSuccess && (
-        <p className="rounded-xl bg-brand-50 p-3 text-brand-700">
+        <p className="rounded-xl bg-money-50 p-3 text-money-700">
           {save.data.created} facturas nuevas · {save.data.linked} que ya tenías quedaron con los datos del SII.
         </p>
       )}

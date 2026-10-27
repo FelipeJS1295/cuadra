@@ -1,6 +1,15 @@
 import { createHmac } from 'node:crypto';
 import { arr, dayRange, http, num, pick, str, toDate } from './util.js';
-import { ProviderError, type NormalizedItem, type NormalizedOrder, type NormalizedProduct, type ProviderConfig, type RetailProvider } from './types.js';
+import {
+  ProviderError,
+  type NormalizedItem,
+  type NormalizedOrder,
+  type NormalizedProduct,
+  type ProductChanges,
+  type ProviderConfig,
+  type RetailProvider,
+  type UpdateResult,
+} from './types.js';
 
 /** RFC 3986 (como pide Falabella para firmar) */
 const enc = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -13,7 +22,7 @@ const isoSeconds = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, '+00:00');
  * Cada llamada lleva Action, UserID, Version, Format, Timestamp y Signature =
  * HMAC-SHA256(API Key, parámetros ordenados y codificados).
  */
-async function call(cfg: ProviderConfig, action: string, params: Record<string, string> = {}): Promise<Record<string, unknown>> {
+async function call(cfg: ProviderConfig, action: string, params: Record<string, string> = {}, xml?: string): Promise<Record<string, unknown>> {
   const userId = cfg.settings.userId?.trim();
   const apiKey = cfg.secrets.apiKey?.trim();
   if (!userId || !apiKey) throw new ProviderError('Faltan el usuario (correo) y la API Key de Falabella');
@@ -26,7 +35,13 @@ async function call(cfg: ProviderConfig, action: string, params: Record<string, 
   const base = (cfg.settings.baseUrl || 'https://sellercenter-api.falabella.com').replace(/\/+$/, '');
   const sellerId = (cfg.settings.sellerId || 'SELLER').replace(/[^\w-]/g, '');
   const { json } = await http(`${base}/?${query}&Signature=${signature}`, {
-    headers: { Accept: 'application/json', 'User-Agent': `${sellerId}/Node/${process.versions.node}/PROPIA/FACL` },
+    method: xml ? 'POST' : 'GET',
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': `${sellerId}/Node/${process.versions.node}/PROPIA/FACL`,
+      ...(xml ? { 'Content-Type': 'text/xml; charset=utf-8' } : {}),
+    },
+    body: xml,
     timeoutMs: 90000,
   });
   const body = (json ?? {}) as Record<string, unknown>;
@@ -61,6 +76,8 @@ const orderItems = (o: Record<string, unknown>): NormalizedItem[] =>
     paidPrice: num(pick(i, 'PaidPrice', 'ItemPrice')),
     shippingAmount: num(pick(i, 'ShippingAmount')),
     status: str(pick(i, 'Status')),
+    // Entregado: la última actualización del producto es la entrega
+    deliveredAt: /deliver|entregad/i.test(String(pick(i, 'Status') ?? '')) ? toDate(pick(i, 'UpdatedAt')) : null,
     raw: i,
   }));
 
@@ -168,6 +185,7 @@ export const falabella: RetailProvider = {
           status: str(pick(bu, 'Status') ?? pick(p, 'Status')),
           url: str(pick(p, 'Url')),
           imageUrl: str(pick(p, 'MainImage', 'Images.Image')),
+          description: str(pick(p, 'Description')),
           raw: p,
         });
       }
@@ -176,4 +194,55 @@ export const falabella: RetailProvider = {
     }
     return out;
   },
+
+  editable: ['stock', 'price', 'salePrice', 'name', 'description'],
+
+  /**
+   * ProductUpdate (XML por POST). Falabella lo procesa en segundo plano: devuelve un FeedID
+   * y el resultado se consulta con FeedStatus (checkUpdate).
+   */
+  async updateProduct(cfg, target, changes) {
+    const body = await call(cfg, 'ProductUpdate', {}, productXml(target.sellerSku, changes));
+    const feed = str(pick(body, 'SuccessResponse.Head.RequestId', 'SuccessResponse.Head.RequestID'));
+    if (!feed) return { status: 'APLICADO', message: 'Falabella recibió el cambio' };
+    return { status: 'EN_PROCESO', message: 'Falabella lo está procesando…', reference: feed };
+  },
+
+  async checkUpdate(cfg, reference) {
+    const body = await call(cfg, 'FeedStatus', { FeedID: reference });
+    const d = (pick(body, 'SuccessResponse.Body.FeedDetail') ?? {}) as Record<string, unknown>;
+    const status = String(pick(d, 'Status') ?? '').toLowerCase();
+    const errors = arr(pick(d, 'FeedErrors.Error', 'FeedErrors'))
+      .map((e) => str(pick(e, 'Message')))
+      .filter(Boolean);
+    if (status === 'queued' || status === 'processing' || !status) return { status: 'EN_PROCESO', message: 'Falabella lo está procesando…', reference };
+    if (status === 'finished' && !errors.length && !(num(pick(d, 'FailedRecords')) ?? 0)) {
+      return { status: 'APLICADO', message: 'Falabella aplicó el cambio', reference };
+    }
+    return { status: 'RECHAZADO', message: `Falabella: ${errors.join(' · ') || `terminó con estado ${String(pick(d, 'Status'))}`}`, reference } satisfies UpdateResult;
+  },
 };
+
+const xmlText = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** "2026-10-22 00:00:00" */
+const fdate = (d: string, end = false) => `${d} ${end ? '23:59:59' : '00:00:00'}`;
+
+function productXml(sellerSku: string, c: ProductChanges) {
+  const tag = (name: string, v: string | number | null | undefined) => (v === undefined ? '' : `<${name}>${v === null ? '' : xmlText(String(v))}</${name}>`);
+  // Precios, oferta y stock van por unidad de negocio (Falabella Chile = facl)
+  const bu = [
+    tag('Price', c.price === undefined ? undefined : Math.round(c.price)),
+    c.salePrice === undefined ? '' : tag('SpecialPrice', c.salePrice === null ? null : Math.round(c.salePrice)),
+    c.salePrice ? tag('SpecialFromDate', c.saleFrom ? fdate(c.saleFrom) : undefined) + tag('SpecialToDate', c.saleTo ? fdate(c.saleTo, true) : undefined) : '',
+    c.salePrice === null ? tag('SpecialFromDate', null) + tag('SpecialToDate', null) : '',
+    tag('Stock', c.stock === undefined ? undefined : Math.max(0, Math.round(c.stock))),
+  ].join('');
+  return (
+    '<?xml version="1.0" encoding="UTF-8" ?><Request><Product>' +
+    tag('SellerSku', sellerSku) +
+    tag('Name', c.name) +
+    tag('Description', c.description) +
+    (bu ? `<BusinessUnits><BusinessUnit><OperatorCode>facl</OperatorCode>${bu}</BusinessUnit></BusinessUnits>` : '') +
+    '</Product></Request>'
+  );
+}

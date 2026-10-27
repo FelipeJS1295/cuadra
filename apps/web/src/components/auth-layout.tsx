@@ -1,34 +1,40 @@
-import { CheckCircle2 } from 'lucide-react';
+import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { Logo } from './logo';
 
 /** Pantalla de entrada: a la izquierda qué hace Cuadra, a la derecha el formulario */
 export function AuthLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="grid min-h-screen lg:grid-cols-2">
-      <aside className="hidden flex-col justify-between bg-brand-900 p-12 text-white lg:flex">
-        <div className="flex items-center gap-2">
-          <span className="grid size-10 place-items-center rounded-xl bg-white text-xl font-bold text-brand-900">C</span>
-          <span className="text-xl font-semibold">Cuadra</span>
-        </div>
-        <div>
-          <h2 className="text-4xl leading-tight font-semibold">Sabe cuánto ganaste en cada venta y quién te debe plata.</h2>
-          <ul className="mt-8 space-y-3 text-lg text-brand-100">
+    <div className="grid min-h-screen bg-white lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+      <aside className="relative hidden flex-col justify-between overflow-hidden bg-graphite-900 p-12 text-white lg:flex">
+        <Link href="/" className="w-fit">
+          <Logo dark />
+        </Link>
+        <div className="max-w-md">
+          <p className="display text-[2.25rem] leading-[1.1] font-semibold">Lo vendido y lo pagado, frente a frente.</p>
+          <dl className="mt-10 divide-y divide-white/10 border-y border-white/10 text-sm">
             {[
-              'Tus ventas de Falabella, Paris, Walmart y más, en un solo lugar',
-              'Cuadra solo lo que te pagó cada retailer contra lo que vendiste',
-              'Boletas y notas de crédito al SII con un clic',
-              'Tu IVA del mes, sin planillas',
-            ].map((t) => (
-              <li key={t} className="flex items-start gap-3">
-                <CheckCircle2 className="mt-1 size-5 shrink-0 text-brand-200" /> {t}
-              </li>
+              ['Ventas de Falabella, Paris y Walmart', 'en un solo lugar'],
+              ['Cada liquidación', 'cruzada orden por orden'],
+              ['Boletas, facturas y notas', 'directo al SII'],
+              ['Fecha de cada pago', 'según cómo paga cada retailer'],
+            ].map(([a, b]) => (
+              <div key={a} className="flex items-baseline justify-between gap-6 py-3.5">
+                <dt className="text-white/90">{a}</dt>
+                <dd className="text-right text-white/50">{b}</dd>
+              </div>
             ))}
-          </ul>
+          </dl>
         </div>
-        <p className="text-sm text-brand-200">Hecho en Chile para vendedores de marketplace.</p>
+        <p className="text-sm text-white/40">Hecho en Chile para empresas que venden en marketplaces.</p>
       </aside>
-      <main className="flex items-center justify-center p-6">
-        <div className="w-full max-w-md">{children}</div>
+      <main className="flex flex-col p-6 sm:p-10">
+        <Link href="/" className="lg:hidden">
+          <Logo />
+        </Link>
+        <div className="flex flex-1 items-center justify-center py-10">
+          <div className="w-full max-w-[400px]">{children}</div>
+        </div>
       </main>
     </div>
   );

@@ -13,8 +13,8 @@ export default function LoginPage() {
   const login = useMutation({ mutationFn: () => api.login(email, password), onSuccess: () => (window.location.href = '/') });
   return (
     <AuthLayout>
-      <h1 className="text-3xl font-semibold tracking-tight">Hola de nuevo</h1>
-      <p className="mt-1 text-muted">Entra con tu correo y contraseña.</p>
+      <h1 className="display text-[1.75rem] font-semibold">Entra a Cuadra</h1>
+      <p className="mt-1.5 text-muted">Con el correo y la contraseña de tu cuenta.</p>
       <form
         className="mt-8 space-y-4"
         onSubmit={(e) => {
