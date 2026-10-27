@@ -37,8 +37,10 @@ const COURIER: Record<string, string> = {
 /**
  * Quién retira: Paris informa el courier de cada sub-orden (STARKEN…); el resto, según el retailer.
  */
-function courierOf(code: string, carrier: string | null) {
+export function courierOf(code: string, carrier: string | null) {
   const c = (carrier ?? '').trim();
+  // Ventas recibidas de un cliente de Cuadra: el courier lo informa el cliente
+  if (code.startsWith('CLI-') && c) return c;
   if (code === 'CENCOSUD' && c) {
     if (/blue/i.test(c)) return 'Bluexpress';
     return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
@@ -82,7 +84,9 @@ export interface SaleWithMargin {
   status: string | null;
   cancelled: boolean;
   /** API: llegó por la conexión con el retailer · ARCHIVO: se subió el reporte */
-  source: 'API' | 'ARCHIVO';
+  source: 'API' | 'ARCHIVO' | 'CLIENTE';
+  /** Empresa de Cuadra (proveedor) a la que se le envió esta venta */
+  sentToSupplier: string | null;
   /** Cliente (razón social si pidió factura) y su RUT */
   customer: string | null;
   customerRut: string | null;
@@ -197,6 +201,8 @@ type SaleGroup = {
   cancelled: boolean;
   /** La orden llegó por la API del retailer (no por archivo) */
   from_api: boolean;
+  from_client: boolean;
+  sent_to_supplier: string | null;
   /** Respaldo si la orden no está en ninguna conciliación (con IVA) */
   sale_price: number | null;
   shipping_price: number | null;
@@ -272,6 +278,8 @@ export class SalesService {
           round(sum(coalesce(s.shipping_cost, 0)
             * case when s.amounts_include_tax then 1 else ${sql.raw(String(VAT_RATE))} end))::float8 as shipping_price,
           bool_or(coalesce(s.raw->>'__origen', '') = 'API') as from_api,
+          bool_or(coalesce(s.raw->>'__origen', '') = 'CUADRA') as from_client,
+          min(s.sent_to_supplier) as sent_to_supplier,
           coalesce(min(nullif(trim(s.billing_legal_name), '')), min(nullif(trim(s.customer_name), '')), min(nullif(trim(s.shipping_name), ''))) as customer_name,
           coalesce(min(nullif(trim(s.billing_tax_id), '')), min(nullif(trim(s.customer_document), ''))) as customer_rut,
           bool_or(coalesce(s.document_type, '') ilike '%factura%' or coalesce(s.billing_tax_id, '') <> '') as wants_invoice,
@@ -416,7 +424,8 @@ export class SalesService {
         state,
         statusRaw: g.status,
         cancelled: g.cancelled,
-        source: g.from_api ? ('API' as const) : ('ARCHIVO' as const),
+        source: g.from_client ? ('CLIENTE' as const) : g.from_api ? ('API' as const) : ('ARCHIVO' as const),
+        sentToSupplier: g.sent_to_supplier,
         customer: g.customer_name,
         customerRut: g.customer_rut,
         documentRequested: g.wants_invoice ? ('FACTURA' as const) : ('BOLETA' as const),

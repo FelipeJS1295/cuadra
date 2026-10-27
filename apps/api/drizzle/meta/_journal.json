@@ -78,6 +78,27 @@
       "when": 1793113529350,
       "tag": "0010_fecha_despacho",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793115680729,
+      "tag": "0011_ventas_a_proveedor",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793121478559,
+      "tag": "0012_precio_neto_clientes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793125735149,
+      "tag": "0013_walmart_fecha_chile",
+      "breakpoints": true
     }
   ]
 }

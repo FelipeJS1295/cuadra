@@ -1,7 +1,6 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { SettingsService } from '../../company/settings.service.js';
 import { SiiRejectedError, SiiUnknownError } from '../api-gateway.client.js';
-import { territory } from './nubox.client.js';
 import type { IssuedDoc } from './types.js';
 
 /**
@@ -59,12 +58,16 @@ export interface ClassicInvoiceInput {
   /** Total con IVA */
   total: number;
   fecha: string;
+  /**
+   * Varias líneas (factura de varias órdenes): nombre, cantidad y precio unitario NETO.
+   * Si vienen, reemplazan a item/total.
+   */
+  lines?: { name: string; quantity: number; unitNet: number; code?: string | null; description?: string | null }[];
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface ClassicDocInput {
-  tipo: 39 | 61;
+  tipo: 33 | 39 | 61;
   fecha: string;
   receptorRut: string;
   receptorNombre: string;
@@ -75,7 +78,14 @@ export interface ClassicDocInput {
   /** Total con IVA */
   total: number;
   referencia?: { tipo: number; folio: string; fecha: string; codRef: 1 | 3; razon: string };
+  /** Factura (33): una línea por producto con su precio unitario NETO */
+  lines?: { name: string; quantity: number; unitNet: number; code?: string | null; description?: string | null }[];
 }
+
+
+/** Descripción larga de una línea de factura: nombre, código, OC y retail ("Cód. SECCTOR · OC 896… · Cliente Walmart") */
+const extended = (l: { name: string; code?: string | null; description?: string | null }) =>
+  [l.name, l.code && l.code !== 'DESPACHO' ? `Cód. ${l.code}` : null, l.description].filter(Boolean).join(' · ');
 
 @Injectable()
 export class NuboxClassicClient {
@@ -98,8 +108,6 @@ export class NuboxClassicClient {
       funcionario: s.usuarioRut!,
       sucursal: s.sucursal || '1',
       serie: s.nuboxSerie,
-      // Las facturas van por la API de Nubox Pyme, con el mismo token del usuario API
-      pymeUrl: `${s.nuboxUrl}/v1`,
       tenantId: this.settings.tenantId(),
     };
   }
@@ -170,7 +178,9 @@ export class NuboxClassicClient {
   async emitir(input: ClassicDocInput): Promise<IssuedDoc> {
     const c = await this.login();
     const total = Math.round(input.total);
-    const boleta = input.tipo === 39;
+    // Boletas y facturas van por el endpoint "dte/extendido" (el que funciona con el usuario API)
+    const boleta = input.tipo === 39 || input.tipo === 33;
+    const factura = input.tipo === 33;
     const counterpart = {
       rutContraparte: input.receptorRut,
       razonSocialContraparte: cut(input.receptorNombre || 'Cliente', 100),
@@ -228,9 +238,29 @@ export class NuboxClassicClient {
           fechaPeriodoHasta: input.fecha,
           codigoSucursal: c.sucursal,
         };
+    // Factura: una línea por producto, con precio neto (Nubox calcula el IVA) y la OC y retail en la descripción
+    const productos = factura
+      ? (input.lines?.length ? input.lines : [{ name: input.item, quantity: 1, unitNet: Math.round(total / 1.19) }]).map((l, i) => {
+          const { codigoSIITipoDeServicio: _servicio, ...rest } = line as Record<string, unknown>;
+          return {
+            ...rest,
+            rutContraparte: input.receptorRut,
+            razonSocialContraparte: cut(input.receptorNombre, 100),
+            giroContraparte: cut(input.receptorGiro || '', 40),
+            comunaContraparte: cut(input.receptorComuna || '', 20),
+            direccionContraparte: cut(input.receptorDireccion || '', 70),
+            secuencia: i + 1,
+            producto: cut(l.name, 80),
+            descripcion: cut(extended(l), 1000),
+            cantidad: l.quantity,
+            precio: Math.round(l.unitNet),
+            valor: Math.round(l.unitNet) * l.quantity,
+          };
+        })
+      : [line];
     const r = input.referencia;
     const body = {
-      productos: [line],
+      productos,
       // Nubox pide declararlo aunque vaya vacío
       documentoReferenciado: r
         ? {
@@ -252,7 +282,7 @@ export class NuboxClassicClient {
     // Boleta: solo los headers que usa la integración que funciona (token y Content-Type)
     const headers = (token: string) => (boleta ? { token, 'Content-Type': 'application/json' } : this.headers(token));
     const path = url.replace(c.url, '');
-    this.logger.log(`Nubox ${boleta ? 'boleta' : 'documento'}: enviando POST ${path} · ${JSON.stringify(body)}`);
+    this.logger.log(`Nubox ${factura ? 'factura' : boleta ? 'boleta' : 'documento'}: enviando POST ${path} · ${JSON.stringify(body)}`);
     const started = Date.now();
     let res: Response;
     try {
@@ -313,97 +343,22 @@ export class NuboxClassicClient {
   }
 
   /**
-   * Factura electrónica (33) por la API de Nubox Pyme con el token del usuario API
-   * (así funciona en otra integración de la empresa).
-   *   POST {pyme}/v1/sales/issuance   header "token"   body [ { type: { legalCode: '33' }, client, details, … } ]
-   * Responde el id de la venta (o su folio); el folio se consulta en GET {pyme}/v1/sales/{id}.
+   * Factura (33): por el mismo endpoint y token que las boletas ("dte/extendido"), con una línea
+   * por producto a precio neto y la OC y el retail en su descripción.
    */
   async emitirFactura(input: ClassicInvoiceInput): Promise<IssuedDoc> {
-    const c = await this.login();
-    const total = Math.round(input.total);
-    // Nubox recibe el precio neto y calcula el IVA
-    const net = Math.round(total / 1.19);
-    const doc = {
-      sequence: 1,
-      type: { legalCode: '33' },
-      client: {
-        tradeName: cut(input.receptorNombre, 100),
-        identification: { type: 1, value: input.receptorRut },
-        email: input.receptorEmail ?? '',
-        contactName: cut(input.receptorNombre, 100),
-        mainActivity: cut(input.receptorGiro, 40),
-        address: cut(input.receptorDireccion, 70),
-        city: cut(input.receptorComuna, 20),
-        // Si la comuna no se reconoce, Santiago (como la integración que ya funciona)
-        territorialDivisionLegalCode: '13',
-        territorialDivisionL2LegalCode: '13101',
-        ...territory(input.receptorComuna),
-      },
-      dueDate: input.fecha,
-      saleType: { id: 1 },
-      paymentForm: { id: 1 },
-      comment: 'Venta marketplace',
-      details: [
-        {
-          order: 1,
-          quantity: 1,
-          productDescription: cut(input.item, 80),
-          productDescriptionExtended: cut(input.item, 80),
-          subjectToTax: true,
-          uom: { code: 'UNID' },
-          price: net,
-          taxes: [],
-          discountsAndSurcharges: [],
-        },
-      ],
-      references: [],
-    };
-    const post = (token: string) =>
-      this.fetch(`${c.pymeUrl}/sales/issuance`, {
-        method: 'POST',
-        headers: { token, Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify([doc]),
-        timeoutMs: 120000,
-      });
-    let res = await post(c.token);
-    if (res.status === 401) res = await post((await this.login(true)).token);
-    const text = await res.text();
-    let json: unknown = text;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      /* texto */
-    }
-    const item = (Array.isArray(json) ? json[0] : json) as Record<string, unknown> | null;
-    const errors = (item?.errors as { field?: string; message?: string }[] | null | undefined) ?? null;
-    if (errors?.length) throw new SiiRejectedError(`Nubox: ${errors.map((e) => [e.field, e.message].filter(Boolean).join(': ')).join(' · ')}`);
-    if (!res.ok && res.status !== 207) {
-      const msg = String(findDeep(json, /^(message|mensaje|error|detail|descripcion)$/i) ?? text).replace(/\s+/g, ' ').slice(0, 400);
-      this.logger.warn(`Nubox factura ${res.status}: ${msg} · ${JSON.stringify(doc)}`);
-      if (res.status >= 500) throw new SiiUnknownError(`Nubox respondió ${res.status}: ${msg}`);
-      throw new SiiRejectedError(msg || `Error ${res.status}`);
-    }
-    const raw = (folio: number, extra: Record<string, unknown>) => ({ provider: 'NUBOX_CLASICO', folio, tipo: 33, ...extra });
-    const direct = Number(findDeep(item, /^(documentNumber|folio|number)$/i));
-    const id = item?.id as number | string | undefined;
-    if (Number.isFinite(direct) && direct > 0) {
-      return { folio: direct, dte: 33, pdfUrl: null, pdfBase64: null, raw: raw(direct, { nuboxId: id ?? null, response: json }) };
-    }
-    if (!id) throw new SiiUnknownError(`Nubox recibió la factura pero no informó su N° (respuesta: ${text.slice(0, 200) || 'vacía'}). Búscala en Nubox y anótala en la orden.`);
-    // El folio queda listo unos segundos después
-    for (let i = 0; i < 10; i++) {
-      await sleep(i === 0 ? 1500 : 2500);
-      const r = await this.fetch(`${c.pymeUrl}/sales/${encodeURIComponent(String(id))}`, { headers: { token: c.token, Accept: 'application/json' } }).catch(() => null);
-      if (!r?.ok) continue;
-      const sale = (await r.json().catch(() => null)) as { number?: string | number; emissionStatus?: { id?: number; name?: string }; comments?: string } | null;
-      const status = `${sale?.emissionStatus?.name ?? ''} ${sale?.comments ?? ''}`.toLowerCase();
-      if (/rechaz|error/.test(status)) throw new SiiRejectedError(`Nubox no pudo emitir la factura: ${sale?.comments ?? sale?.emissionStatus?.name}`);
-      const folio = Number(sale?.number);
-      if (Number.isFinite(folio) && folio > 0 && (sale?.emissionStatus?.id === undefined || sale.emissionStatus.id === 1)) {
-        return { folio, dte: 33, pdfUrl: null, pdfBase64: null, raw: raw(folio, { nuboxId: id, sale }) };
-      }
-    }
-    throw new SiiUnknownError(`Nubox recibió la factura (id ${id}) pero todavía no entrega el folio. Revísala en Nubox en unos minutos y anota su N° en la orden.`);
+    return this.emitir({
+      tipo: 33,
+      fecha: input.fecha,
+      receptorRut: input.receptorRut,
+      receptorNombre: input.receptorNombre,
+      receptorGiro: input.receptorGiro,
+      receptorDireccion: input.receptorDireccion,
+      receptorComuna: input.receptorComuna,
+      item: input.item,
+      total: input.total,
+      lines: input.lines,
+    });
   }
 
   /** PDF de un documento emitido */

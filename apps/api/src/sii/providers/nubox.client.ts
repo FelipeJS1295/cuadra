@@ -50,9 +50,19 @@ export interface NuboxDocInput {
   item: string;
   /** Total con IVA */
   total: number;
+  /**
+   * Varias líneas (factura de varias órdenes): nombre, cantidad y precio unitario NETO.
+   * Si vienen, reemplazan a item/total.
+   */
+  lines?: { name: string; quantity: number; unitNet: number; code?: string | null; description?: string | null }[];
   /** Solo notas de crédito: el documento que se corrige */
   referencia?: { tipo: number; folio: string; fecha: string; total: number; codRef: 1 | 3; razon: string };
 }
+
+
+/** Descripción larga de una línea de factura: nombre, código, OC y retail ("Cód. SECCTOR · OC 896… · Cliente Walmart") */
+const extended = (l: { name: string; code?: string | null; description?: string | null }) =>
+  [l.name, l.code && l.code !== 'DESPACHO' ? `Cód. ${l.code}` : null, l.description].filter(Boolean).join(' · ');
 
 @Injectable()
 export class NuboxClient {
@@ -162,18 +172,30 @@ export class NuboxClient {
       },
       saleType: { id: 1 },
       paymentForm: { id: 1 },
-      details: [
-        {
-          order: 1,
-          quantity: 1,
-          productDescription: cut(input.item, 80),
-          price: net,
-          uom: { code: 'UNID' },
-          subjectToTax: true,
-          taxes: [{ legalCode: '14', amount: vat }],
-          discountsAndSurcharges: [],
-        },
-      ],
+      details: input.lines?.length
+        ? input.lines.map((l, i) => ({
+            order: i + 1,
+            quantity: l.quantity,
+            productDescription: cut(l.name, 80),
+            productDescriptionExtended: cut(extended(l), 1000),
+            price: Math.round(l.unitNet),
+            uom: { code: 'UNID' },
+            subjectToTax: true,
+            taxes: [{ legalCode: '14', amount: Math.round(Math.round(l.unitNet) * l.quantity * 0.19) }],
+            discountsAndSurcharges: [],
+          }))
+        : [
+            {
+              order: 1,
+              quantity: 1,
+              productDescription: cut(input.item, 80),
+              price: net,
+              uom: { code: 'UNID' },
+              subjectToTax: true,
+              taxes: [{ legalCode: '14', amount: vat }],
+              discountsAndSurcharges: [],
+            },
+          ],
     };
     if (input.referencia) {
       const r = input.referencia;

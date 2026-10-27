@@ -2,7 +2,8 @@
 
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ClipboardList, Layers, Link2, Package, Plus, Search, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { ClientProducts } from '@/components/client-products';
 import { RetailProducts } from '@/components/retail-products';
 import { useSession } from '@/components/session';
 import { Button, Card, clp, Empty, ErrorBox, Field, inputCls, Loading, Modal, Page, parseAmount, Pill, Tabs, td, th, typingAmount } from '@/components/ui';
@@ -11,7 +12,15 @@ import { cn } from '@/lib/cn';
 
 export default function ProductsPage() {
   const { canEdit, isFactory } = useSession();
-  const [tab, setTab] = useState<'productos' | 'insumos' | 'sin-asociar' | 'retailers'>('productos');
+  const [tab, setTab] = useState<'productos' | 'insumos' | 'sin-asociar' | 'retailers' | 'clientes'>('productos');
+  // Productos que llegaron con ventas de clientes de Cuadra
+  const clientProducts = useQuery({ queryKey: ['client-products'], queryFn: api.clientProducts });
+  const clientPending = (clientProducts.data ?? []).filter((p) => p.price === null).length;
+  // ?tab=clientes (el aviso de ventas recibidas lleva aquí)
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'clientes' || t === 'retailers' || t === 'sin-asociar') setTab(t);
+  }, []);
   const supplies = useQuery({ queryKey: ['supplies'], queryFn: api.listSupplies, enabled: isFactory });
   const [creating, setCreating] = useState(false);
   const products = useQuery({ queryKey: ['products'], queryFn: api.listProducts });
@@ -77,6 +86,9 @@ export default function ProductsPage() {
             ...(isFactory ? [{ id: 'insumos' as const, label: 'Insumos', count: supplies.data?.length }] : []),
             { id: 'sin-asociar', label: 'Sin asociar', count: unlinked.length },
             { id: 'retailers', label: 'En los retailers' },
+            ...(clientProducts.data?.length || tab === 'clientes'
+              ? [{ id: 'clientes' as const, label: clientPending ? `De clientes · ${clientPending} sin precio` : 'De clientes', count: clientProducts.data?.length }]
+              : []),
           ]}
         />
       </div>
@@ -87,6 +99,8 @@ export default function ProductsPage() {
         <SupplyList supplies={supplies.data} loading={supplies.isLoading} />
       ) : tab === 'retailers' ? (
         <RetailProducts />
+      ) : tab === 'clientes' ? (
+        <ClientProducts products={products.data ?? []} />
       ) : (
         <Unlinked items={unlinked} products={products.data ?? []} loading={recs.some((q) => q.isLoading)} />
       )}

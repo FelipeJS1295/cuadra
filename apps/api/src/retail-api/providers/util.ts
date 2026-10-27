@@ -143,7 +143,8 @@ export function dayRange(from: string, to: string) {
 /**
  * Día (AAAA-MM-DD) de una fecha informada por el retailer, sin correrlo por la zona horaria:
  * "2026-10-26" o "2026-10-23 23:00:00" -> ese día; un instante con zona -> el día en Chile;
- * un timestamp a medianoche UTC (Walmart: estimatedShipDate) -> ese día.
+ * un timestamp (Walmart: estimatedShipDate) -> el día en Chile, igual que lo muestra su portal
+ * (ej. 27-10 00:00 UTC = 26-10 21:00 en Chile -> 26).
  */
 export function dayOf(v: unknown): string | null {
   if (v === null || v === undefined || v === '') return null;
@@ -151,6 +152,5 @@ export function dayOf(v: unknown): string | null {
   if (/^\d{4}-\d{2}-\d{2}$/.test(s) || /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(s)) return s.slice(0, 10);
   const d = toDate(v);
   if (!d) return null;
-  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0) return d.toISOString().slice(0, 10);
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(d);
 }

@@ -17,13 +17,14 @@ import { SiiProviderService } from './sii-provider.service.js';
 import { NuboxClient } from './providers/nubox.client.js';
 import { NuboxClassicClient } from './providers/nubox-classic.client.js';
 import { SiiPortalClient } from './providers/sii-portal.client.js';
+import { SiiPublicClient } from './providers/sii-public.client.js';
 import { SimpleApiClient } from './providers/simpleapi.client.js';
 
 @Module({
   // Los datos del cliente y los montos de la orden salen de Ventas
   imports: [SalesModule, SettlementsModule, RetailApiModule],
   controllers: [SiiController, CreditNotesController, PurchasesImportController, MipymeController],
-  providers: [SiiService, ApiGatewayClient, SimpleApiClient, NuboxClient, NuboxClassicClient, SiiPortalClient, SiiProviderService, CreditNotesService, PurchasesImportService, MipymeService, GuidesService, PurchaseDocsService],
+  providers: [SiiService, ApiGatewayClient, SimpleApiClient, NuboxClient, NuboxClassicClient, SiiPortalClient, SiiPublicClient, SiiProviderService, CreditNotesService, PurchasesImportService, MipymeService, GuidesService, PurchaseDocsService],
   exports: [CreditNotesService, ApiGatewayClient, SiiProviderService],
 })
 export class SiiModule {}

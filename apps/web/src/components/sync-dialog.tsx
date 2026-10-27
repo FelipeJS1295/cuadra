@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ArrowRight, Check, Plug, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -76,6 +76,19 @@ export function SyncDialog({ onClose }: { onClose: () => void }) {
 
   const active = useMemo(() => (conns.data ?? []).filter((c) => c.enabled && c.configured), [conns.data]);
 
+  // Ventas que llegaron de clientes de Cuadra (ej. Jamaroff): se actualizan las que ya están
+  const clients = useQuery({ queryKey: ['b2b-clients'], queryFn: api.b2bClients });
+  const hasClients = (clients.data?.length ?? 0) > 0;
+  const refresh = useMutation({ mutationFn: api.b2bRefresh });
+  const clientsStarted = useRef(false);
+  useEffect(() => {
+    if (hasClients && !clientsStarted.current) {
+      clientsStarted.current = true;
+      refresh.mutate();
+    }
+  }, [hasClients, refresh]);
+  const clientsDone = !hasClients || refresh.isSuccess || refresh.isError;
+
   const patch = useCallback((provider: RetailProviderCode, p: Partial<Row>) => setRows((rs) => rs && rs.map((r) => (r.c.provider === provider ? { ...r, ...p } : r))), []);
 
   // Arranca todas a la vez apenas se sabe qué retailers están conectados
@@ -118,7 +131,8 @@ export function SyncDialog({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [behind, rows]);
 
-  const finished = rows != null && rows.length > 0 && rows.every(done);
+  const nothing = rows != null && rows.length === 0 && !clients.isLoading && !hasClients;
+  const finished = rows != null && (rows.length > 0 || hasClients) && rows.every(done) && clientsDone;
   const close = () => {
     for (const k of SALES_KEYS) qc.invalidateQueries({ queryKey: [k] });
     onClose();
@@ -140,9 +154,9 @@ export function SyncDialog({ onClose }: { onClose: () => void }) {
       }
       onClose={close}
       footer={
-        finished || (rows && rows.length === 0) ? (
+        finished || nothing ? (
           <Button onClick={close}>
-            {rows?.length ? 'Ver ventas' : 'Cerrar'} <ArrowRight className="size-4" />
+            {nothing ? 'Cerrar' : 'Ver ventas'} <ArrowRight className="size-4" />
           </Button>
         ) : (
           <Button variant="secondary" onClick={close}>
@@ -151,9 +165,9 @@ export function SyncDialog({ onClose }: { onClose: () => void }) {
         )
       }
     >
-      {conns.isLoading || !rows ? (
+      {conns.isLoading || clients.isLoading || !rows ? (
         <Loading label="Revisando tus conexiones…" />
-      ) : rows.length === 0 ? (
+      ) : nothing ? (
         <div className="flex flex-col items-center py-6 text-center">
           <div className="grid size-11 place-items-center rounded-full bg-paper text-muted">
             <Plug className="size-5" />
@@ -171,6 +185,15 @@ export function SyncDialog({ onClose }: { onClose: () => void }) {
             {rows.map((r, i) => (
               <RetailerRow key={r.c.provider} row={r} index={i} />
             ))}
+            {hasClients && (
+              <ClientsRow
+                names={clients.data!.map((c) => c.name)}
+                index={rows.length}
+                state={refresh.isError ? 'error' : refresh.isSuccess ? 'ok' : 'run'}
+                result={refresh.data?.clients}
+                error={refresh.error instanceof Error ? refresh.error.message : null}
+              />
+            )}
           </ul>
         </>
       )}
@@ -251,6 +274,48 @@ function RetailerRow({ row, index }: { row: Row; index: number }) {
           })}
         </div>
       )}
+    </li>
+  );
+}
+
+/** Ventas recibidas de clientes de Cuadra: se actualizan las que ya llegaron (no se traen nuevas) */
+function ClientsRow({
+  names,
+  index,
+  state,
+  result,
+  error,
+}: {
+  names: string[];
+  index: number;
+  state: 'run' | 'ok' | 'error';
+  result?: { client: string; lines: number; updated: number; cancelled: number; missing: number }[];
+  error: string | null;
+}) {
+  return (
+    <li className="anim-rise bg-white px-4 py-3.5" style={{ animationDelay: `${index * 80}ms` }}>
+      <div className="flex items-center gap-3">
+        <StatusDot state={state} />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">
+            {names.join(', ')} <span className="text-xs font-normal text-muted">· clientes de Cuadra</span>
+          </p>
+          {state === 'run' ? (
+            <p className="mt-0.5 text-[0.8125rem] text-ink">Actualizando las ventas que te enviaron…</p>
+          ) : state === 'error' ? (
+            <p className="mt-0.5 text-[0.8125rem] text-berry-700">{error}</p>
+          ) : (
+            (result ?? []).map((r) => (
+              <p key={r.client} className="mt-0.5 text-[0.8125rem] text-muted">
+                {r.client}: {r.lines} {r.lines === 1 ? 'venta revisada' : 'ventas revisadas'}
+                {r.updated > 0 ? ` · ${r.updated} con cambios` : ' · sin cambios'}
+                {r.cancelled > 0 && <span className="text-berry-700"> · {r.cancelled} cancelada{r.cancelled === 1 ? '' : 's'} por el cliente</span>}
+                {r.missing > 0 && ` · ${r.missing} ya no están en su cuenta`}
+              </p>
+            ))
+          )}
+        </div>
+      </div>
     </li>
   );
 }

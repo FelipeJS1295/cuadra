@@ -68,6 +68,50 @@ export interface BoletaEmitida {
   retail?: RetailSend | null;
 }
 
+/** Proveedor y si tiene cuenta en Cuadra (solo a esos se les envían ventas) */
+export interface B2bSupplier {
+  id: string;
+  name: string;
+  taxId: string | null;
+  onPlatform: boolean;
+  platformName: string | null;
+}
+
+export interface B2bSendResult {
+  supplier: string;
+  orders: number;
+  lines: number;
+  newLines: number;
+  updatedLines: number;
+  newProducts: number;
+}
+
+/** Producto que llegó de un cliente de Cuadra (lo configura el proveedor) */
+export interface ClientProduct {
+  id: string;
+  clientCode: string;
+  client: string;
+  sku: string;
+  name: string;
+  /** Precio de venta al cliente, neto (sin IVA) */
+  price: number | null;
+  productId: string | null;
+  productName: string | null;
+  parentSku: string | null;
+  ownName: string | null;
+  units: number;
+}
+
+export interface AppNotification {
+  id: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
 /** Una línea por despachar (Maestra de despachos) */
 export interface DispatchLine {
   /** Quién retira: Bluexpress, Starken, Ripley… */
@@ -157,7 +201,10 @@ export interface SaleRow {
   status: string | null;
   cancelled: boolean;
   /** API: llegó sola por la conexión con el retailer · ARCHIVO: se subió el reporte */
-  source: 'API' | 'ARCHIVO';
+  /** API · ARCHIVO · CLIENTE (la envió un cliente de Cuadra) */
+  source: 'API' | 'ARCHIVO' | 'CLIENTE';
+  /** Proveedor de Cuadra al que se le envió esta venta */
+  sentToSupplier: string | null;
   customer: string | null;
   customerRut: string | null;
   /** FACTURA si el cliente la pidió; si no, BOLETA */
@@ -985,6 +1032,34 @@ export interface FacturaPreview {
   receptor: FacturaReceptor;
 }
 
+/** Línea de factura: código, producto, OC, retail donde se vendió y monto neto */
+export interface InvoiceLine {
+  orderNumber: string;
+  code: string | null;
+  name: string;
+  oc: string;
+  origin: string | null;
+  quantity: number;
+  unitNet: number | null;
+  net: number;
+}
+
+/** Factura de varias ventas del mismo cliente (una línea por producto con su OC y precio neto) */
+export interface FacturaLotePreview {
+  retailerCode: string;
+  client: string;
+  orders: string[];
+  lines: InvoiceLine[];
+  net: number;
+  vat: number;
+  total: number;
+  receptor: FacturaReceptor;
+  /** true: se emite al tiro (Nubox); false: queda en borrador en el Portal MIPYME */
+  direct: boolean;
+  providerName: string;
+  problems: string[];
+}
+
 export interface Contribuyente {
   rut: string;
   razonSocial: string | null;
@@ -1351,6 +1426,13 @@ export const api = {
 
   // Portal MIPYME
   mipymeSync: () => request<MipymeSyncResult>('/sii/mipyme/sincronizar', { method: 'POST' }),
+  facturaLotePreview: (retailerCode: string, orderNumbers: string[]) =>
+    request<FacturaLotePreview>('/sii/mipyme/facturas/lote/preview', { method: 'POST', body: JSON.stringify({ retailerCode, orderNumbers }) }),
+  createFacturaLote: (retailerCode: string, orderNumbers: string[], receptor: FacturaReceptor) =>
+    request<{ folio: number | null; draftCode: string | null; orders: number; total: number }>('/sii/mipyme/facturas/lote', {
+      method: 'POST',
+      body: JSON.stringify({ retailerCode, orderNumbers, receptor }),
+    }),
   contribuyente: (rut: string) => request<Contribuyente>(`/sii/mipyme/contribuyente/${encodeURIComponent(rut)}`),
   facturaPreview: (retailerCode: string, orderNumber: string) =>
     request<FacturaPreview>(
@@ -1385,6 +1467,18 @@ export const api = {
   emitBoletas: (orders: { retailerCode: string; orderNumber: string }[]) =>
     request<BoletasLote>('/sii/boletas/lote', { method: 'POST', body: JSON.stringify({ orders }) }),
   dispatchBoard: () => request<DispatchLine[]>('/sales/despachos'),
+  // Ventas entre empresas de Cuadra
+  b2bSuppliers: () => request<B2bSupplier[]>('/b2b/suppliers'),
+  b2bClients: () => request<{ code: string; name: string; lines: number }[]>('/b2b/clients'),
+  b2bRefresh: () =>
+    request<{ clients: { client: string; lines: number; updated: number; cancelled: number; missing: number }[] }>('/b2b/refresh', { method: 'POST' }),
+  b2bSend: (supplierId: string, orders: { retailerCode: string; orderNumber: string }[]) =>
+    request<B2bSendResult>('/b2b/send', { method: 'POST', body: JSON.stringify({ supplierId, orders }) }),
+  clientProducts: () => request<ClientProduct[]>('/b2b/client-products'),
+  updateClientProduct: (id: string, changes: { price?: number | null; parentSku?: string | null; name?: string | null; productId?: string | null }) =>
+    request<{ ok: boolean }>(`/b2b/client-products/${id}`, { method: 'PATCH', body: JSON.stringify(changes) }),
+  notifications: () => request<{ unread: number; items: AppNotification[] }>('/b2b/notifications'),
+  readNotifications: (ids?: string[]) => request<{ ok: boolean }>('/b2b/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) }),
   /** Sube al portal del retailer (Paris) una boleta o factura emitida */
   sendReceiptToRetailer: (receiptId: string) => request<RetailSend>(`/sii/boletas/${receiptId}/enviar-retail`, { method: 'POST' }),
   sendPendingReceipts: (retailerCode: string) =>

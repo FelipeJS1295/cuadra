@@ -2,8 +2,9 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, CircleDashed, FileMinus, FileText, Loader2, Send, X, XCircle } from 'lucide-react';
-import { useState } from 'react';
-import { api, type RetailSend, type SaleRow, type SiiStatus } from '@/lib/api';
+import { useEffect, useState, type ReactNode } from 'react';
+import { api, type FacturaLotePreview, type FacturaReceptor, type RetailSend, type SaleRow, type SiiStatus } from '@/lib/api';
+import { InvoicePreview } from './invoice-preview';
 import { cn } from '@/lib/cn';
 import { Button, clp, Field, inputCls, Modal } from './ui';
 
@@ -67,6 +68,41 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
 
   const set = (key: string, r: Result) => setResults((x) => ({ ...x, [key]: r }));
 
+  // Facturas: datos del receptor de cada orden (Cuadra completa lo que puede; el resto se escribe aquí)
+  const [receptors, setReceptors] = useState<Record<string, FacturaReceptor | 'error'>>({});
+  // Factura de cada orden como se va a emitir (líneas, neto, IVA, total)
+  const [invoices, setInvoices] = useState<Record<string, FacturaLotePreview>>({});
+  const readyKeys = ready.map((c) => c.sale.key).join('|');
+  useEffect(() => {
+    if (kind !== 'facturas') return;
+    let alive = true;
+    (async () => {
+      for (const c of ready) {
+        const p = await api.facturaLotePreview(c.sale.retailerCode, [c.sale.orderNumber!]).catch(() => null);
+        if (!alive) return;
+        if (p) setInvoices((x) => ({ ...x, [c.sale.key]: p }));
+        setReceptors((x) => ({ ...x, [c.sale.key]: p ? p.receptor : 'error' }));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, readyKeys]);
+  const missingOf = (r: FacturaReceptor | 'error' | undefined) =>
+    !r || r === 'error' ? [] : (['rut', 'name', 'activity', 'address', 'commune'] as const).filter((k) => !r[k]?.trim());
+  const loadingReceptors = kind === 'facturas' && ready.some((c) => receptors[c.sale.key] === undefined);
+  const incomplete = kind === 'facturas' ? ready.filter((c) => results[c.sale.key]?.state !== 'ok' && missingOf(receptors[c.sale.key]).length > 0) : [];
+  /** Al escribir un dato, se completa también en las otras órdenes del mismo RUT que lo tengan vacío */
+  const editReceptor = (key: string, field: keyof FacturaReceptor, value: string) =>
+    setReceptors((x) => {
+      const cur = x[key];
+      if (!cur || cur === 'error') return x;
+      const next = { ...x, [key]: { ...cur, [field]: value } };
+      for (const [k, r] of Object.entries(x)) if (k !== key && r !== 'error' && r.rut && r.rut === cur.rut && !r[field]?.trim()) next[k] = { ...r, [field]: value };
+      return next;
+    });
+
   async function one(c: Candidate): Promise<string> {
     const s = c.sale;
     if (kind === 'boletas') {
@@ -74,10 +110,10 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
       return `Boleta N° ${r.folio}${retailNote(r.retail)}`;
     }
     if (kind === 'facturas') {
-      const p = await api.facturaPreview(s.retailerCode, s.orderNumber!);
-      const r = p.receptor;
+      const known = receptors[c.sale.key];
+      const r = known && known !== 'error' ? known : (await api.facturaPreview(s.retailerCode, s.orderNumber!)).receptor;
       const missing = [!r.rut && 'RUT', !r.name && 'razón social', !r.activity && 'giro', !r.address && 'dirección', !r.commune && 'comuna'].filter(Boolean);
-      if (missing.length) throw new Error(`Faltan datos de facturación (${missing.join(', ')}): hazla desde el detalle de la venta`);
+      if (missing.length) throw new Error(`Faltan datos de facturación (${missing.join(', ')})`);
       const res = await api.createFactura({ retailerCode: s.retailerCode, orderNumber: s.orderNumber!, receptor: r });
       return res.folio ? `Factura N° ${res.folio}${retailNote(res.retail)}` : `Borrador N° ${res.draftCode}`;
     }
@@ -128,7 +164,12 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
             <Button variant="secondary" onClick={onClose} disabled={running}>
               Cancelar
             </Button>
-            <Button onClick={run} loading={running} disabled={ready.length === 0}>
+            <Button
+              onClick={run}
+              loading={running || loadingReceptors}
+              disabled={ready.length === 0 || incomplete.length > 0}
+              title={incomplete.length ? 'Completa los datos de facturación que faltan' : undefined}
+            >
               {kind === 'facturas' && sii?.can.facturasDirectas ? 'Emitir' : verb} {ready.length} {kind === 'boletas' ? 'boletas' : kind === 'facturas' ? 'facturas' : 'notas'}
             </Button>
           </>
@@ -145,6 +186,12 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
         </Field>
       )}
 
+      {kind === 'facturas' && !done && incomplete.length > 0 && !loadingReceptors && (
+        <p className="rounded-xl bg-sun-50 p-3 text-sm text-sun-700">
+          {incomplete.length === 1 ? 'A 1 orden le faltan' : `A ${incomplete.length} órdenes les faltan`} datos de facturación que no encontramos (ni en tus facturas
+          anteriores ni en el SII). Escríbelos abajo: quedan guardados para la próxima.
+        </p>
+      )}
       {done && (
         <p className={cn('rounded-xl p-3 text-sm font-medium', errCount ? 'bg-sun-50 text-sun-700' : 'bg-money-50 text-money-700')}>
           {okCount} {okCount === 1 ? 'lista' : 'listas'}
@@ -153,7 +200,7 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
       )}
 
       {ready.length > 0 && (
-        <ul className="max-h-80 divide-y divide-line overflow-y-auto rounded-xl border border-line">
+        <ul className={cn('divide-y divide-line overflow-y-auto rounded-xl border border-line', kind === 'facturas' ? 'max-h-[62vh]' : 'max-h-80')}>
           {ready.map((c) => {
             const r = results[c.sale.key];
             return (
@@ -169,12 +216,31 @@ export function BulkDialog({ kind, sales, sii, onClose }: { kind: BulkKind; sale
                     <XCircle className="size-4 text-berry-700" />
                   )}
                 </span>
-                <span className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1">
                   <span className="font-medium">{label(c.sale)}</span>
                   <span className="text-muted"> · {c.sale.customer ?? 'Sin nombre'}</span>
                   {r?.message && <span className={cn('block text-xs', r.state === 'error' ? 'text-berry-700' : 'text-money-700')}>{r.message}</span>}
-                </span>
-                <span className="num whitespace-nowrap">{clp(kind === 'notas' ? c.amount : c.sale.salePrice)}</span>
+                  {kind === 'facturas' && r?.state !== 'ok' && (() => {
+                    const rec = receptors[c.sale.key];
+                    const inv = invoices[c.sale.key];
+                    if (!rec || rec === 'error' || !inv) return <ReceptorFields value={rec} disabled={running} onChange={(f, v) => editReceptor(c.sale.key, f, v)} />;
+                    return (
+                      <div className="mt-2">
+                        {inv.problems.length > 0 && <p className="mb-1.5 text-xs text-berry-700">{inv.problems.join(' · ')}</p>}
+                        <InvoicePreview
+                          receptor={rec}
+                          lines={inv.lines}
+                          net={inv.net}
+                          vat={inv.vat}
+                          total={inv.total}
+                          onReceptor={(f, v) => editReceptor(c.sale.key, f, v)}
+                          disabled={running}
+                        />
+                      </div>
+                    );
+                  })()}
+                </div>
+                {kind !== 'facturas' && <span className="num whitespace-nowrap">{clp(kind === 'notas' ? c.amount : c.sale.salePrice)}</span>}
               </li>
             );
           })}
@@ -205,11 +271,14 @@ export function SelectionBar({
   sii,
   onAction,
   onClear,
+  extra,
 }: {
   selected: SaleRow[];
   sii: SiiStatus | undefined;
   onAction: (k: BulkKind) => void;
   onClear: () => void;
+  /** Más acciones (ej: enviar al proveedor) */
+  extra?: ReactNode;
 }) {
   const count = (k: BulkKind) => candidates(k, selected).filter((c) => c.ok).length;
   const can = sii?.can;
@@ -245,6 +314,7 @@ export function SelectionBar({
             </button>
           );
         })}
+        {extra}
         <button onClick={onClear} className="ml-1 rounded-xl px-2 py-1.5 text-white/70 hover:text-white" title="Quitar selección">
           <X className="size-4" />
         </button>
@@ -257,4 +327,56 @@ export function SelectionBar({
 function retailNote(r: RetailSend | null | undefined) {
   if (!r) return '';
   return r.ok ? ` · ${r.message.toLowerCase()}` : ` · no se pudo enviar a ${r.retailer}: ${r.message} (reintenta desde la venta)`;
+}
+
+const RECEPTOR_LABEL: Record<keyof FacturaReceptor, string> = { rut: 'RUT', name: 'Razón social', activity: 'Giro', address: 'Dirección', commune: 'Comuna' };
+const RECEPTOR_MAX: Record<keyof FacturaReceptor, number> = { rut: 12, name: 100, activity: 40, address: 70, commune: 20 };
+
+/** Datos del receptor de una factura: muestra lo encontrado y deja escribir lo que falta */
+function ReceptorFields({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: FacturaReceptor | 'error' | undefined;
+  disabled: boolean;
+  onChange: (field: keyof FacturaReceptor, value: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  if (value === undefined)
+    return (
+      <span className="mt-1 flex items-center gap-1.5 text-xs text-muted">
+        <Loader2 className="size-3 animate-spin" /> Buscando datos de facturación…
+      </span>
+    );
+  if (value === 'error') return <span className="mt-1 block text-xs text-berry-700">No se pudieron leer los datos de facturación de esta orden</span>;
+  const fields = (['rut', 'name', 'activity', 'address', 'commune'] as const).filter((k) => editing || !value[k]?.trim());
+  return (
+    <span className="mt-1 block">
+      <span className="block text-xs text-muted">
+        {[value.name || '—', value.rut, value.activity, [value.address, value.commune].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+        {!editing && !fields.length && !disabled && (
+          <button onClick={() => setEditing(true)} className="ml-1.5 font-medium text-brand-700 hover:underline">
+            Cambiar
+          </button>
+        )}
+      </span>
+      {fields.length > 0 && (
+        <span className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+          {fields.map((f) => (
+            <input
+              key={f}
+              value={value[f] ?? ''}
+              onChange={(e) => onChange(f, e.target.value)}
+              disabled={disabled}
+              maxLength={RECEPTOR_MAX[f]}
+              placeholder={RECEPTOR_LABEL[f]}
+              aria-label={RECEPTOR_LABEL[f]}
+              className={cn(inputCls, 'h-8 px-2 py-1 text-xs', !value[f]?.trim() && 'border-sun-500')}
+            />
+          ))}
+        </span>
+      )}
+    </span>
+  );
 }

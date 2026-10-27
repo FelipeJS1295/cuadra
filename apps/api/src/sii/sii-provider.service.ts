@@ -143,6 +143,8 @@ export class SiiProviderService {
     receptor: { rut: string; name: string; activity: string; address: string; commune: string; email?: string | null };
     item: string;
     total: number;
+    /** Factura de varias líneas (nombre, cantidad, precio unitario neto) */
+    lines?: { name: string; quantity: number; unitNet: number; code?: string | null; description?: string | null }[];
   }): Promise<IssuedDoc> {
     const provider = await this.require('facturas', 'emitir facturas');
     const r = input.receptor;
@@ -157,6 +159,7 @@ export class SiiProviderService {
         receptorEmail: r.email,
         item: input.item,
         total: input.total,
+        lines: input.lines,
       });
     }
     if (provider === 'NUBOX') {
@@ -169,6 +172,7 @@ export class SiiProviderService {
         receptorComuna: r.commune,
         item: input.item,
         total: input.total,
+        lines: input.lines,
       });
     }
     throw new BadRequestException('Con API Gateway la factura se crea como borrador en el Portal MIPYME');

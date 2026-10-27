@@ -22,6 +22,12 @@ const facturaSchema = z.object({
   }),
 });
 
+const loteSchema = z.object({
+  retailerCode: z.string().min(1).max(30),
+  orderNumbers: z.array(z.string().min(1).max(50)).min(1, 'Elige al menos una venta').max(60, 'Máximo 60 ventas por factura'),
+  receptor: facturaSchema.shape.receptor,
+});
+
 const guideSchema = z.object({
   guideDate: dateSchema,
   transferType: z.number().int(),
@@ -87,6 +93,22 @@ export class MipymeController {
   createFactura(@Body() body: unknown, @CurrentUser() user: SessionUser) {
     const input = validate(facturaSchema, body);
     return this.mipyme.createFactura(input.retailerCode, input.orderNumber, input.receptor, user?.id ?? null);
+  }
+
+  /** Factura de varias ventas del mismo cliente: qué llevaría */
+  @Post('facturas/lote/preview')
+  @HttpCode(200)
+  facturaLotePreview(@Body() body: unknown) {
+    const input = validate(loteSchema.omit({ receptor: true }), body);
+    return this.mipyme.facturaLotePreview(input.retailerCode, input.orderNumbers);
+  }
+
+  /** Una factura para varias ventas del mismo cliente (línea por producto con su OC y precio neto) */
+  @Post('facturas/lote')
+  @HttpCode(200)
+  createFacturaLote(@Body() body: unknown, @CurrentUser() user: SessionUser) {
+    const input = validate(loteSchema, body);
+    return this.mipyme.createFacturaLote(input.retailerCode, input.orderNumbers, input.receptor, user?.id ?? null);
   }
 
   @Delete('facturas/:id')

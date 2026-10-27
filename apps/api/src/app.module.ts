@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AccountingModule } from './accounting/accounting.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { B2bModule } from './b2b/b2b.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CompanyModule } from './company/company.module.js';
 import { SettingsModule } from './company/settings.module.js';
@@ -41,6 +42,7 @@ import { SiiModule } from './sii/sii.module.js';
     ReturnsModule,
     RetailApiModule,
     CatalogModule,
+    B2bModule,
   ],
 })
 export class AppModule {}

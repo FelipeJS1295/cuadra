@@ -76,6 +76,12 @@ export const salesRecords = pgTable(
     fulfillment: varchar('fulfillment', { length: 50 }), // Tipo de fulfillment
     trackingCode: varchar('tracking_code', { length: 100 }), // Codigo de seguimiento
     dispatchDeadline: date('dispatch_deadline'), // Fecha limite de despacho
+    /**
+     * Venta enviada al proveedor dentro de Cuadra (empresas de compra y venta): a quién y cuándo.
+     * El proveedor la recibe como venta de un canal con el nombre de esta empresa.
+     */
+    sentToSupplier: varchar('sent_to_supplier', { length: 200 }),
+    sentToSupplierAt: timestamp('sent_to_supplier_at', { withTimezone: true }),
     /** Fecha en que el cliente recibió el producto (la informa la API del retailer) */
     deliveredAt: date('delivered_at'),
 

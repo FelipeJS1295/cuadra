@@ -27,6 +27,7 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { Landing } from './landing';
 import { Logo } from './logo';
+import { NotificationsBell } from './notifications-bell';
 import { SessionProvider, useMe } from './session';
 import { Loading } from './ui';
 
@@ -120,6 +121,7 @@ function AppShell({ children }: { children: ReactNode }) {
 
             <div className="ml-auto flex items-center gap-1">
               <TenantSwitcher />
+              {user.tenantId && <NotificationsBell />}
               {user.isSuperadmin && (
                 <Link
                   href="/admin"
