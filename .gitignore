@@ -8,3 +8,9 @@ next-env.d.ts
 *.tsbuildinfo
 # Archivos de prueba con datos reales (no subir)
 _pruebas/
+# Despliegue: respaldos y secretos (no subir)
+deploy/*.dump
+deploy/*.tar.gz
+deploy/.env.production
+deploy/respaldos/
+deploy/conteo-local.txt
