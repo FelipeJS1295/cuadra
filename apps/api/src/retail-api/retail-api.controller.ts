@@ -1,10 +1,25 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { CurrentUser, Roles, type SessionUser } from '../auth/decorators.js';
 import { validate } from '../products/catalog.validation.js';
 import { RetailApiService } from './retail-api.service.js';
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (AAAA-MM-DD)');
+
+const pickupSchema = z.object({
+  carrierCode: z.string().trim().min(1, 'Elige el courier'),
+  warehouseCode: z.string().trim().min(1, 'Elige la bodega'),
+  qty: z.coerce.number().int().min(1, 'Indica la cantidad de bultos').max(999),
+  weight: z.coerce.number().positive('Indica el peso total').max(99999),
+  size: z.enum(['xs', 's', 'm', 'l', 'c']),
+  customSize: z.string().trim().max(60).optional(),
+  pickupDate: dateSchema,
+  rangeTime: z.enum(['AM', 'PM']),
+  contactName: z.string().trim().min(2, 'Falta el nombre de contacto').max(100),
+  contactPhone: z.string().trim().min(8, 'Falta el teléfono de contacto').max(20),
+});
+const labelsSchema = z.object({ orders: z.array(z.string().trim().min(1)).min(1).max(100) });
 
 /** Desde el 20 del mes pasado hasta hoy (igual que Ventas) */
 function defaultRange() {
@@ -31,6 +46,49 @@ function defaultRange() {
 @Controller('retail-api')
 export class RetailApiController {
   constructor(private readonly service: RetailApiService) {}
+
+  // ---------- Envíame (Paris): retiros y etiquetas
+  //   GET  /api/retail-api/enviame/status             ¿está conectado?
+  //   GET  /api/retail-api/enviame/setup              bodegas, couriers y último retiro
+  //   GET  /api/retail-api/enviame/pickups?from=&to=  retiros agendados
+  //   POST /api/retail-api/enviame/pickups            crear retiro ("cita")
+  //   POST /api/retail-api/enviame/labels { orders }  etiquetas en un PDF
+
+  @Get('enviame/status')
+  enviameStatus() {
+    return this.service.enviameStatus();
+  }
+
+  @Get('enviame/setup')
+  enviameSetup() {
+    return this.service.enviameSetup();
+  }
+
+  @Get('enviame/pickups')
+  enviamePickups(@Query('from') from?: string, @Query('to') to?: string) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
+    const shift = (d: string, n: number) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+    return this.service.enviamePickups(validate(dateSchema, from ?? shift(today, -3)), validate(dateSchema, to ?? shift(today, 7)));
+  }
+
+  @Post('enviame/pickups')
+  createPickup(@Body() body: unknown) {
+    return this.service.enviameCreatePickup(validate(pickupSchema, body));
+  }
+
+  @Post('enviame/labels')
+  async labels(@Body() body: unknown, @Res() res: Response) {
+    const { orders } = validate(labelsSchema, body);
+    const r = await this.service.parisLabels(orders);
+    const name = `etiquetas-paris-${new Date().toISOString().slice(0, 10)}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${name}"`);
+    // Resumen en cabeceras (el cuerpo es el PDF)
+    res.setHeader('X-Labels-Count', String(r.count));
+    res.setHeader('X-Labels-Missing', encodeURIComponent(r.missing.join(',')));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Labels-Count, X-Labels-Missing');
+    res.send(r.pdf);
+  }
 
   @Get('connections')
   connections() {

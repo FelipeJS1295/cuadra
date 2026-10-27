@@ -4,7 +4,16 @@ import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { BASE_DB, DRIZZLE, type Database } from '../database/database.module.js';
 import { currentTenantId, runInBackground } from '../database/tenant-context.js';
-import { customerReceipts, retailApiConnections, retailApiOrderItems, retailApiOrders, retailApiProducts, retailProductChanges, retailSkuNames, settlementRecords } from '../database/schema/index.js';
+import {
+  customerReceipts,
+  retailApiConnections,
+  retailApiOrderItems,
+  retailApiOrders,
+  retailApiProducts,
+  retailProductChanges,
+  retailSkuNames,
+  settlementRecords,
+} from '../database/schema/index.js';
 import { PROVIDERS, providerByCode } from './providers/index.js';
 import {
   ProviderError,
@@ -19,6 +28,7 @@ import {
 } from './providers/types.js';
 import { decryptSecrets, encryptSecrets, mask } from '../common/secrets.js';
 import { orderToSales, retailerIdFor } from './api-to-sales.js';
+import * as enviame from './providers/enviame.js';
 
 export interface SyncJob {
   id: string;
@@ -123,6 +133,109 @@ export class RetailApiService {
     return { label: p.label, ...(await p.uploadInvoice!(await this.config(p), { ...input, externalOrderId: input.externalOrderId ?? o?.externalId ?? null })) };
   }
 
+  // ------------------------------------------------------------------ Envíame (Paris): retiros y etiquetas
+
+  /** Configuración de Paris con las claves de Envíame, o error claro si faltan */
+  private async enviameConfig() {
+    const p = this.provider('CENCOSUD');
+    const cfg = await this.config(p);
+    if (!cfg.secrets.enviameApiKey || !cfg.settings.enviameSellerId)
+      throw new BadRequestException('Conecta Envíame primero: Configuración → Conexiones → Paris → API Key e ID de empresa de Envíame');
+    return cfg;
+  }
+
+  private async saveMemo(key: string, value: unknown) {
+    const r = await this.row('CENCOSUD');
+    if (!r) return;
+    await this.db
+      .update(retailApiConnections)
+      .set({ settings: { ...((r.settings ?? {}) as Record<string, string>), [key]: JSON.stringify(value) } })
+      .where(eq(retailApiConnections.provider, 'CENCOSUD'));
+  }
+
+  /** ¿Está conectado Envíame? (para mostrar los botones) */
+  async enviameStatus() {
+    const r = await this.row('CENCOSUD');
+    const secrets = decryptSecrets(r?.secrets ?? null);
+    return { connected: Boolean(secrets.enviameApiKey && (r?.settings as Record<string, string> | null)?.enviameSellerId) };
+  }
+
+  /** Bodegas, couriers y lo último que se usó en un retiro (para el formulario) */
+  async enviameSetup() {
+    const cfg = await this.enviameConfig();
+    const [warehouses, carriers] = await Promise.all([
+      this.wrap(() => enviame.warehouses(cfg)),
+      enviame.carriers(cfg).catch(() => [] as enviame.EnviameCarrier[]),
+    ]);
+    let last: Partial<enviame.PickupInput> = {};
+    try {
+      last = JSON.parse(cfg.settings.memoPickup ?? '{}');
+    } catch {
+      /* sin datos previos */
+    }
+    return { warehouses, carriers, last };
+  }
+
+  /** Retiros agendados entre dos fechas (máx. 31 días) */
+  async enviamePickups(from: string, to: string) {
+    const cfg = await this.enviameConfig();
+    const dates: string[] = [];
+    for (let d = new Date(`${from}T12:00:00Z`); d <= new Date(`${to}T12:00:00Z`) && dates.length < 31; d.setUTCDate(d.getUTCDate() + 1))
+      dates.push(d.toISOString().slice(0, 10));
+    const list = await this.wrap(() => enviame.pickups(cfg, dates));
+    return list.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+  }
+
+  async enviameCreatePickup(input: enviame.PickupInput) {
+    const cfg = await this.enviameConfig();
+    const r = await this.wrap(() => enviame.createPickup(cfg, input));
+    // Se recuerda courier, bodega y contacto para el próximo retiro
+    const { carrierCode, warehouseCode, contactName, contactPhone, rangeTime, size, weight } = input;
+    await this.saveMemo('memoPickup', { carrierCode, warehouseCode, contactName, contactPhone, rangeTime, size, weight });
+    return r;
+  }
+
+  /** Etiquetas de Envíame de varias órdenes de Paris en un solo PDF */
+  async parisLabels(orderNumbers: string[]) {
+    const cfg = await this.enviameConfig();
+    // Cada orden puede figurar en Envíame con la sub-orden o con la orden completa
+    const rows = await this.db
+      .select({ orderNumber: retailApiOrders.orderNumber, customerOrderId: retailApiOrders.customerOrderId, orderDate: retailApiOrders.orderDate })
+      .from(retailApiOrders)
+      .where(
+        sql`${retailApiOrders.provider} = 'CENCOSUD' and (${retailApiOrders.orderNumber} in ${orderNumbers} or ${retailApiOrders.customerOrderId} in ${orderNumbers})`,
+      );
+    const refs = orderNumbers.map((n) => {
+      const r = rows.find((x) => x.orderNumber === n || x.customerOrderId === n);
+      return { key: n, candidates: [...new Set([n, r?.orderNumber, r?.customerOrderId].filter((x): x is string => Boolean(x)))] };
+    });
+    const oldest = rows.reduce<Date | null>((m, r) => (r.orderDate && (!m || r.orderDate < m) ? r.orderDate : m), null);
+    const from = new Date((oldest ?? new Date(Date.now() - 45 * 86400000)).getTime() - 3 * 86400000).toISOString().slice(0, 10);
+
+    const found = await this.wrap(() => enviame.findDeliveries(cfg, refs, from));
+    const missing = orderNumbers.filter((n) => !found.has(n));
+    const deliveries = [...found.values()].flat();
+    const notReady = deliveries.filter((d) => d.statusId !== enviame.ENVIAME_STATUS.READY && !d.labelPdf);
+    if (!deliveries.length)
+      throw new BadRequestException(`Envíame no tiene envíos para ${missing.length === 1 ? 'la orden' : 'las órdenes'} ${missing.join(', ')}`);
+    if (notReady.length)
+      throw new BadRequestException(
+        `Aún no se puede imprimir la etiqueta de ${notReady.map((d) => `${d.importedId ?? d.id} (${d.status ?? 'sin estado'})`).join(', ')}. Debe estar "Listo para despacho" en Envíame.`,
+      );
+    const r = await this.wrap(() => enviame.labelsPdf(cfg, deliveries));
+    return { ...r, missing, count: deliveries.length };
+  }
+
+  /** Errores del conector como 400 con su mensaje (no 500) */
+  private async wrap<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof ProviderError) throw new BadRequestException(err.message);
+      throw err;
+    }
+  }
+
   // ------------------------------------------------------------------ Conexiones
 
   async connections() {
@@ -183,7 +296,10 @@ export class RetailApiService {
   async save(code: string, input: { enabled: boolean; settings: Record<string, string>; secrets: Record<string, string> }) {
     const p = this.provider(code);
     const current = await this.row(p.code);
-    const settings: Record<string, string> = {};
+    // Se conservan los datos que guarda Cuadra al usarla (ej: contacto de los retiros de Envíame)
+    const settings: Record<string, string> = Object.fromEntries(
+      Object.entries((current?.settings ?? {}) as Record<string, string>).filter(([k]) => k.startsWith('memo')),
+    );
     for (const f of p.fields.filter((x) => !x.secret)) settings[f.key] = (input.settings[f.key] ?? '').trim();
     const secrets = decryptSecrets(current?.secrets ?? null);
     for (const f of p.fields.filter((x) => x.secret)) {
@@ -248,11 +364,13 @@ export class RetailApiService {
       if (p.settlements) {
         job.stage = 'LIQUIDACION';
         job.message = 'Trayendo la liquidación…';
-        const moves = await p.settlements(cfg, from, to, (m) => (job.message = m), orders).catch((err) => {
-          this.logger.warn(`${p.code} liquidación: ${errMessage(err)}`);
-          job.message = `No se pudo traer la liquidación: ${errMessage(err)}`;
-          return [] as NormalizedSettlement[];
-        });
+        const moves = await p
+          .settlements(cfg, from, to, (m) => (job.message = m), orders)
+          .catch((err) => {
+            this.logger.warn(`${p.code} liquidación: ${errMessage(err)}`);
+            job.message = `No se pudo traer la liquidación: ${errMessage(err)}`;
+            return [] as NormalizedSettlement[];
+          });
         settled = await this.saveSettlements(p.code, p.label, moves);
       }
       // Boletas: ¿el retailer ya tiene la boleta de cada orden?
@@ -304,7 +422,10 @@ export class RetailApiService {
       select cr.id, cr.order_number, cr.retail_status
       from customer_receipts cr join retailers r on r.id = cr.retailer_id
       where r.code = ${p.code} and cr.status in ('EMITIDA', 'REGISTRADA')
-        and cr.order_number in (${sql.join([...external.keys()].map((n) => sql`${n}`), sql`, `)})
+        and cr.order_number in (${sql.join(
+          [...external.keys()].map((n) => sql`${n}`),
+          sql`, `,
+        )})
     `);
     if (!rows.length) return { checked: 0, inRetail: 0, missing: 0, error: null };
     const found = await p.invoicesFor!(
@@ -413,9 +534,7 @@ export class RetailApiService {
         // Si esta vez el retailer no entregó el detalle de productos, se conservan los que ya
         // estaban guardados (y el total/envío calculados con ellos)
         const keepItems = o.items.length === 0;
-        const update = keepItems
-          ? Object.fromEntries(Object.entries(values).filter(([k]) => !['itemsCount', 'total', 'shippingTotal'].includes(k)))
-          : values;
+        const update = keepItems ? Object.fromEntries(Object.entries(values).filter(([k]) => !['itemsCount', 'total', 'shippingTotal'].includes(k))) : values;
         const [row] = await tx
           .insert(retailApiOrders)
           .values(values)
@@ -817,7 +936,10 @@ export class RetailApiService {
     if (price !== null && sale && sale >= price) throw new BadRequestException('El precio oferta debe ser menor que el precio normal');
 
     const before = Object.fromEntries(
-      asked.map((k) => [k, k === 'price' ? num(prod.price) : k === 'salePrice' ? num(prod.salePrice) : k === 'stock' ? prod.stock : k === 'name' ? prod.name : prod.description]),
+      asked.map((k) => [
+        k,
+        k === 'price' ? num(prod.price) : k === 'salePrice' ? num(prod.salePrice) : k === 'stock' ? prod.stock : k === 'name' ? prod.name : prod.description,
+      ]),
     );
     const [rec] = await this.db
       .insert(retailProductChanges)
@@ -827,7 +949,11 @@ export class RetailApiService {
     let result: UpdateResult;
     try {
       const cfg = await this.config(p);
-      result = await p.updateProduct(cfg, { sellerSku, retailerSku: prod.retailerSku, price: num(prod.price), salePrice: num(prod.salePrice), raw: prod.raw }, changes);
+      result = await p.updateProduct(
+        cfg,
+        { sellerSku, retailerSku: prod.retailerSku, price: num(prod.price), salePrice: num(prod.salePrice), raw: prod.raw },
+        changes,
+      );
     } catch (err) {
       result = { status: 'RECHAZADO', message: errMessage(err) };
     }
@@ -870,11 +996,19 @@ export class RetailApiService {
     if (pending.length && p.checkUpdate) {
       const cfg = await this.config(p);
       for (const c of pending) {
-        const r = await p.checkUpdate(cfg, c.reference!).catch((err) => ({ status: 'EN_PROCESO' as const, message: `No se pudo consultar: ${errMessage(err)}` }));
+        const r = await p
+          .checkUpdate(cfg, c.reference!)
+          .catch((err) => ({ status: 'EN_PROCESO' as const, message: `No se pudo consultar: ${errMessage(err)}` }));
         // Si lleva más de un día sin respuesta, se da por perdido
         const stale = Date.now() - c.createdAt.getTime() > 86400000;
         if (r.status !== 'EN_PROCESO' || stale) {
-          await this.finishChange(c.id, p.code, c.sellerSku, c.changes as ProductChanges, stale && r.status === 'EN_PROCESO' ? { status: 'RECHAZADO', message: 'El retailer no informó el resultado' } : r);
+          await this.finishChange(
+            c.id,
+            p.code,
+            c.sellerSku,
+            c.changes as ProductChanges,
+            stale && r.status === 'EN_PROCESO' ? { status: 'RECHAZADO', message: 'El retailer no informó el resultado' } : r,
+          );
         }
       }
     }

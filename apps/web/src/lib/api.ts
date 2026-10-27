@@ -281,13 +281,7 @@ export interface SettlementImportResult {
   errors: { row: number; message: string }[];
 }
 
-export type ReconciliationStatus =
-  | 'CONCILIADA'
-  | 'CON_DIFERENCIA'
-  | 'PENDIENTE'
-  | 'SIN_VENTA'
-  | 'CANCELADA'
-  | 'MULTA';
+export type ReconciliationStatus = 'CONCILIADA' | 'CON_DIFERENCIA' | 'PENDIENTE' | 'SIN_VENTA' | 'CANCELADA' | 'MULTA';
 
 export interface ReconciliationRow {
   status: ReconciliationStatus;
@@ -433,7 +427,7 @@ export interface ReconciliationResult {
   retailerCode: string;
   contractCommissionPct: number | null;
   summary: Record<ReconciliationStatus, number>;
-    totals: {
+  totals: {
     salePrice: number;
     productPaid: number;
     commission: number;
@@ -497,7 +491,16 @@ export type BusinessMode = 'REVENDEDOR' | 'FABRICANTE';
 /** Lo que el retailer liquidó para una orden */
 export interface SaleSettlement {
   found: boolean;
-  lines: { kind: string; label: string; detail: string | null; date: string | null; amount: number; pct: number | null; statement: string | null; status: string | null }[];
+  lines: {
+    kind: string;
+    label: string;
+    detail: string | null;
+    date: string | null;
+    amount: number;
+    pct: number | null;
+    statement: string | null;
+    status: string | null;
+  }[];
   /** Lo que se te pagó (suma de todo) */
   total: number;
   statements: string[];
@@ -890,6 +893,34 @@ export interface ProductReturn {
   netCost: number;
 }
 
+/** Orden encontrada al escanear el código de una devolución */
+export interface ScannedOrder {
+  retailerCode: string;
+  retailer: string;
+  orderNumber: string;
+  orderDate: string | null;
+  dispatchDeadline: string | null;
+  deliveredAt: string | null;
+  customer: string | null;
+  commune: string | null;
+  courier: string | null;
+  tracking: string | null;
+  state: string;
+  matchedBy: string;
+  lines: { saleId: string; product: string; retailName: string | null; parentSku: string | null; sku: string | null; quantity: number }[];
+  existing: { id: string; status: ReturnStatus; receivedAt: string | null; productCondition: string | null } | null;
+}
+export interface ReceiveReturnInput {
+  retailerCode: string;
+  orderNumber: string;
+  code: string;
+  scope: 'TOTAL' | 'PARCIAL';
+  products: string[];
+  productCondition: 'BUENO' | 'DANADO';
+  reason: string;
+  notes: string | null;
+}
+
 export interface ReturnInput {
   retailerCode: string;
   orderNumber: string;
@@ -1276,6 +1307,43 @@ export interface RetailSkuName {
   name: string;
 }
 
+/** Envíame (logística de Paris): bodegas, couriers, retiros */
+export interface EnviameWarehouse {
+  code: string;
+  name: string;
+  address: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
+}
+export interface EnviamePickup {
+  id: string;
+  date: string | null;
+  rangeTime: string | null;
+  carrier: string | null;
+  warehouse: string | null;
+  qty: number | null;
+  status: string | null;
+  statusCode: string | null;
+}
+export type PickupSize = 'xs' | 's' | 'm' | 'l' | 'c';
+export interface PickupInput {
+  carrierCode: string;
+  warehouseCode: string;
+  qty: number;
+  weight: number;
+  size: PickupSize;
+  customSize?: string;
+  pickupDate: string;
+  rangeTime: 'AM' | 'PM';
+  contactName: string;
+  contactPhone: string;
+}
+export interface EnviameSetup {
+  warehouses: EnviameWarehouse[];
+  carriers: { code: string; name: string }[];
+  last: Partial<PickupInput>;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -1286,7 +1354,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-    /** Sesión */
+  /** Sesión */
   // Cuenta y empresas
   login: (email: string, password: string) => request<{ ok: boolean }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   signup: (data: { name: string; email: string; password: string; companyName: string; taxId?: string }) =>
@@ -1325,8 +1393,7 @@ export const api = {
     nuboxUser?: string;
     nuboxSerie?: string;
     nuboxPassword?: string;
-  }) =>
-    request<SiiConfig>('/company/sii', { method: 'PUT', body: JSON.stringify(data) }),
+  }) => request<SiiConfig>('/company/sii', { method: 'PUT', body: JSON.stringify(data) }),
   testSii: () => request<{ ok: boolean; message: string }>('/company/sii/test', { method: 'POST' }),
   onboarding: () => request<Onboarding>('/company/onboarding'),
   markOnboarding: (step: string, value: 'SALTADO' | 'HECHO' | null) =>
@@ -1339,19 +1406,15 @@ export const api = {
   adminEnter: (id: string) => request<{ ok: boolean }>(`/admin/tenants/${id}/enter`, { method: 'POST' }),
 
   /** Valida la respuesta con el mismo schema Zod que usa el backend */
-  health: async (): Promise<HealthResponse> =>
-    healthResponseSchema.parse(await request<unknown>('/health')),
+  health: async (): Promise<HealthResponse> => healthResponseSchema.parse(await request<unknown>('/health')),
 
   /** Ventas cargadas (las más recientes primero) */
   /** Ventas por fecha de la orden (AAAA-MM-DD). Sin fechas: desde el 20 del mes pasado hasta hoy */
-  listSales: (from?: string, to?: string) =>
-    request<SaleRow[]>(`/sales${from && to ? `?from=${from}&to=${to}` : ''}`),
+  listSales: (from?: string, to?: string) => request<SaleRow[]>(`/sales${from && to ? `?from=${from}&to=${to}` : ''}`),
 
-    /** Datos del cliente de una orden (para la boleta o factura del SII) */
+  /** Datos del cliente de una orden (para la boleta o factura del SII) */
   customerData: (retailerCode: string, orderNumber: string) =>
-    request<CustomerData>(
-      `/sales/customer?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
-    ),
+    request<CustomerData>(`/sales/customer?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
 
   /** Boleta al cliente final de una orden (si ya tiene, se reemplaza) */
   saleSettlement: (retailerCode: string, orderNumber: string) =>
@@ -1362,16 +1425,16 @@ export const api = {
 
   /** Maestra de retailers */
   listRetailers: () => request<RetailerMaster[]>('/retailers'),
-  updateRetailer: (id: string, data: Partial<Omit<RetailerMaster, 'id' | 'code' | 'orders' | 'lastOrderDate' | 'commissionPct'>> & { commissionPct?: string | number }) =>
-    request<{ ok: boolean }>(`/retailers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  updateRetailer: (
+    id: string,
+    data: Partial<Omit<RetailerMaster, 'id' | 'code' | 'orders' | 'lastOrderDate' | 'commissionPct'>> & { commissionPct?: string | number },
+  ) => request<{ ok: boolean }>(`/retailers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   /** Notas de crédito */
   listCreditNotes: () => request<CreditNote[]>('/credit-notes'),
   pendingCreditNotes: () => request<CreditNotePending[]>('/credit-notes/pending'),
   creditNotePreview: (retailerCode: string, orderNumber: string) =>
-    request<CreditNotePreview>(
-      `/credit-notes/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
-    ),
+    request<CreditNotePreview>(`/credit-notes/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
   draftCreditNote: (data: CreditNoteInput) =>
     request<{ id: string; draftCode: string | null; folio: string | null }>('/credit-notes/draft', { method: 'POST', body: JSON.stringify(data) }),
   registerCreditNote: (data: CreditNoteInput & { folio: string; issuedAt: string }) =>
@@ -1382,9 +1445,12 @@ export const api = {
 
   /** Devoluciones */
   listReturns: () => request<ProductReturn[]>('/returns'),
+  lookupReturn: (code: string) => request<{ code: string; orders: ScannedOrder[] }>(`/returns/lookup?code=${encodeURIComponent(code)}`),
+  lookupReturnText: (text: string) =>
+    request<{ code: string; candidates: string[]; orders: ScannedOrder[] }>('/returns/lookup-text', { method: 'POST', body: JSON.stringify({ text }) }),
+  receiveReturn: (data: ReceiveReturnInput) => request<{ id: string; updated: boolean }>('/returns/receive', { method: 'POST', body: JSON.stringify(data) }),
   createReturn: (data: ReturnInput) => request<{ id: string }>('/returns', { method: 'POST', body: JSON.stringify(data) }),
-  updateReturn: (id: string, data: Partial<ReturnInput>) =>
-    request<{ id: string }>(`/returns/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  updateReturn: (id: string, data: Partial<ReturnInput>) => request<{ id: string }>(`/returns/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteReturn: (id: string) => request<{ deleted: boolean }>(`/returns/${id}`, { method: 'DELETE' }),
 
   /** Cuentas por cobrar */
@@ -1435,22 +1501,20 @@ export const api = {
     }),
   contribuyente: (rut: string) => request<Contribuyente>(`/sii/mipyme/contribuyente/${encodeURIComponent(rut)}`),
   facturaPreview: (retailerCode: string, orderNumber: string) =>
-    request<FacturaPreview>(
-      `/sii/mipyme/facturas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
-    ),
+    request<FacturaPreview>(`/sii/mipyme/facturas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
   createFactura: (data: { retailerCode: string; orderNumber: string; receptor: FacturaReceptor }) =>
-    request<{ id: string; draftCode: string | null; folio?: number; retail?: RetailSend | null }>('/sii/mipyme/facturas', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ id: string; draftCode: string | null; folio?: number; retail?: RetailSend | null }>('/sii/mipyme/facturas', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   deleteFactura: (id: string) => request<{ deleted: boolean; portal: string }>(`/sii/mipyme/facturas/${id}`, { method: 'DELETE' }),
   salesCheck: (month: string) => request<SalesCheck>(`/sii/mipyme/ventas/${month}`),
   creditNotePdfUrl: (id: string) => `${API_URL}/sii/mipyme/notas-credito/${id}/pdf`,
   purchasePdfUrl: (id: string) => `${API_URL}/sii/mipyme/compras/${id}/pdf`,
   purchaseItems: (id: string, refresh = false) =>
-    request<{ items: (InvoiceItem & { suggestions: OrderSuggestion[] })[] }>(
-      `/sii/mipyme/compras/${id}/productos${refresh ? '?refresh=1' : ''}`,
-    ),
+    request<{ items: (InvoiceItem & { suggestions: OrderSuggestion[] })[] }>(`/sii/mipyme/compras/${id}/productos${refresh ? '?refresh=1' : ''}`),
   listGuides: () => request<DispatchGuide[]>('/sii/mipyme/guias'),
-  createGuide: (data: GuideInput) =>
-    request<{ id: string; draftCode: string }>('/sii/mipyme/guias', { method: 'POST', body: JSON.stringify(data) }),
+  createGuide: (data: GuideInput) => request<{ id: string; draftCode: string }>('/sii/mipyme/guias', { method: 'POST', body: JSON.stringify(data) }),
   confirmGuide: (id: string, folio: string, issuedAt: string) =>
     request<{ ok: boolean }>(`/sii/mipyme/guias/${id}/folio`, { method: 'PATCH', body: JSON.stringify({ folio, issuedAt }) }),
   deleteGuide: (id: string) => request<{ deleted: boolean; portal: string | null }>(`/sii/mipyme/guias/${id}`, { method: 'DELETE' }),
@@ -1459,14 +1523,33 @@ export const api = {
   /** Boletas en el SII (API Gateway) */
   siiStatus: () => request<SiiStatus>('/sii/status'),
   boletaPreview: (retailerCode: string, orderNumber: string) =>
-    request<BoletaPreview>(
-      `/sii/boletas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`,
-    ),
+    request<BoletaPreview>(`/sii/boletas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
   emitBoleta: (retailerCode: string, orderNumber: string) =>
     request<BoletaEmitida>('/sii/boletas', { method: 'POST', body: JSON.stringify({ retailerCode, orderNumber }) }),
   emitBoletas: (orders: { retailerCode: string; orderNumber: string }[]) =>
     request<BoletasLote>('/sii/boletas/lote', { method: 'POST', body: JSON.stringify({ orders }) }),
   dispatchBoard: () => request<DispatchLine[]>('/sales/despachos'),
+
+  // Envíame (Paris): retiros y etiquetas
+  enviameStatus: () => request<{ connected: boolean }>('/retail-api/enviame/status'),
+  enviameSetup: () => request<EnviameSetup>('/retail-api/enviame/setup'),
+  enviamePickups: (from: string, to: string) => request<EnviamePickup[]>(`/retail-api/enviame/pickups?from=${from}&to=${to}`),
+  createPickup: (input: PickupInput) =>
+    request<{ id: string | null; status: string | null }>('/retail-api/enviame/pickups', { method: 'POST', body: JSON.stringify(input) }),
+  /** Etiquetas de Envíame de varias órdenes de Paris en un PDF */
+  parisLabels: async (orders: string[]) => {
+    const res = await fetch(`${API_URL}/retail-api/enviame/labels`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orders }),
+    });
+    if (!res.ok) await handle(res);
+    const missing = decodeURIComponent(res.headers.get('X-Labels-Missing') ?? '')
+      .split(',')
+      .filter(Boolean);
+    return { pdf: await res.blob(), count: Number(res.headers.get('X-Labels-Count') ?? 0), missing };
+  },
   // Ventas entre empresas de Cuadra
   b2bSuppliers: () => request<B2bSupplier[]>('/b2b/suppliers'),
   b2bClients: () => request<{ code: string; name: string; lines: number }[]>('/b2b/clients'),
@@ -1511,7 +1594,7 @@ export const api = {
     return handle<ImportResult>(res);
   },
 
-    /** Retailers cuyos archivos de liquidación se pueden cargar */
+  /** Retailers cuyos archivos de liquidación se pueden cargar */
   settlementRetailers: () => request<ImportRetailer[]>('/settlements/import/retailers'),
 
   /** Sube un Excel de liquidación / transacciones */
@@ -1526,26 +1609,22 @@ export const api = {
     return handle<SettlementImportResult>(res);
   },
 
-    /** Productos master */
+  /** Productos master */
   listProducts: () => request<Product[]>('/products'),
-  createProduct: (data: ProductInput) =>
-    request<Product>('/products', { method: 'POST', body: JSON.stringify(data) }),
-  updateProduct: (id: string, data: Partial<ProductInput>) =>
-    request<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  createProduct: (data: ProductInput) => request<Product>('/products', { method: 'POST', body: JSON.stringify(data) }),
+  updateProduct: (id: string, data: Partial<ProductInput>) => request<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProduct: (id: string) => request<{ deleted: boolean }>(`/products/${id}`, { method: 'DELETE' }),
 
   /** Insumos */
   listSupplies: () => request<Supply[]>('/supplies'),
-  createSupply: (data: SupplyInput) =>
-    request<Supply>('/supplies', { method: 'POST', body: JSON.stringify(data) }),
-  updateSupply: (id: string, data: Partial<SupplyInput>) =>
-    request<Supply>(`/supplies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  createSupply: (data: SupplyInput) => request<Supply>('/supplies', { method: 'POST', body: JSON.stringify(data) }),
+  updateSupply: (id: string, data: Partial<SupplyInput>) => request<Supply>(`/supplies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteSupply: (id: string) => request<{ deleted: boolean }>(`/supplies/${id}`, { method: 'DELETE' }),
   recipe: (productId: string) => request<Recipe>(`/products/${productId}/receta`),
   saveRecipe: (productId: string, items: { supplyId: string; quantity: number }[]) =>
     request<Recipe>(`/products/${productId}/receta`, { method: 'PUT', body: JSON.stringify({ items }) }),
 
-    /** Catálogo retail */
+  /** Catálogo retail */
   catalogRetailers: () => request<CatalogRetailer[]>('/catalog/retailers'),
   listCatalog: (retailerCode: string) => request<CatalogRow[]>(`/catalog?retailer=${retailerCode}`),
   importCatalog: async (retailerCode: string, file: File): Promise<CatalogImportResult> => {
@@ -1560,16 +1639,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ids, productId }),
     }),
-    /** Desde la conciliación: une un producto (sin catálogo o sin master) a un master */
+  /** Desde la conciliación: une un producto (sin catálogo o sin master) a un master */
   manualCatalogAssign: (data: { retailerCode: string; sellerSku: string | null; name: string; productId: string }) =>
     request<{ created: boolean; updated: number }>('/catalog/manual', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  deleteCatalogItems: (ids: string[]) =>
-    request<{ deleted: number }>('/catalog/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+  deleteCatalogItems: (ids: string[]) => request<{ deleted: number }>('/catalog/delete', { method: 'POST', body: JSON.stringify({ ids }) }),
 
-    /** Reporte: productos más vendidos. Fechas AAAA-MM-DD opcionales */
+  /** Reporte: productos más vendidos. Fechas AAAA-MM-DD opcionales */
   topProducts: (from?: string, to?: string) => {
     const params = new URLSearchParams();
     if (from) params.set('from', from);
@@ -1578,8 +1656,7 @@ export const api = {
     return request<TopProductsReport>(`/reports/top-products${qs ? `?${qs}` : ''}`);
   },
 
-
-    /** Dashboard de Inicio. Fechas AAAA-MM-DD opcionales */
+  /** Dashboard de Inicio. Fechas AAAA-MM-DD opcionales */
   dashboard: (from?: string, to?: string) => {
     const params = new URLSearchParams();
     if (from) params.set('from', from);
@@ -1588,14 +1665,14 @@ export const api = {
     return request<Dashboard>(`/reports/dashboard${qs ? `?${qs}` : ''}`);
   },
 
-    /** Documentos de compra (facturas del proveedor) */
+  /** Documentos de compra (facturas del proveedor) */
   suppliers: () => request<Supplier[]>('/purchases/suppliers'),
   createPurchaseDocument: (data: NewPurchaseDocument) =>
-    request<{ documentId: string; supplier: string; documentNumber: string; lines: number }>(
-      '/purchases/documents',
-      { method: 'POST', body: JSON.stringify(data) },
-    ),
-    /** Facturas de proveedores y sus pagos */
+    request<{ documentId: string; supplier: string; documentNumber: string; lines: number }>('/purchases/documents', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Facturas de proveedores y sus pagos */
   listInvoices: () => request<PurchaseInvoice[]>('/purchases/invoices'),
   siiPurchases: (month: string) => request<SiiPurchasesPreview>(`/sii/compras?month=${month}`),
   importSiiPurchases: (month: string, keys: string[]) =>
@@ -1608,12 +1685,9 @@ export const api = {
     request<{ ok: boolean }>(`/purchases/invoices/${id}`, { method: 'PATCH', body: JSON.stringify({ issueDate }) }),
   addInvoicePayment: (id: string, data: { amount: string; paidAt: string; method: string | null; note: string | null }) =>
     request<{ id: string }>(`/purchases/invoices/${id}/payments`, { method: 'POST', body: JSON.stringify(data) }),
-  deleteInvoicePayment: (paymentId: string) =>
-    request<{ deleted: boolean }>(`/purchases/payments/${paymentId}`, { method: 'DELETE' }),
-  deletePurchaseLine: (lineId: string) =>
-    request<{ deleted: boolean; documentDeleted: boolean }>(`/purchases/lines/${lineId}`, { method: 'DELETE' }),
+  deleteInvoicePayment: (paymentId: string) => request<{ deleted: boolean }>(`/purchases/payments/${paymentId}`, { method: 'DELETE' }),
+  deletePurchaseLine: (lineId: string) => request<{ deleted: boolean; documentDeleted: boolean }>(`/purchases/lines/${lineId}`, { method: 'DELETE' }),
 
   /** Cruce de ventas vs liquidación de un retailer */
-  reconcile: (retailerCode: string) =>
-    request<ReconciliationResult>(`/reconciliation/${retailerCode}`),
+  reconcile: (retailerCode: string) => request<ReconciliationResult>(`/reconciliation/${retailerCode}`),
 };

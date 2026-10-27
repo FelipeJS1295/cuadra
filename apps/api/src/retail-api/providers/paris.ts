@@ -74,7 +74,11 @@ async function invoicesFor(cfg: ProviderConfig, orders: { orderNumber: string }[
       orders.slice(i, i + 5).map(async (o) => {
         // Si falla una orden, queda sin revisar (no se marca como faltante)
         const list = await invoicesOf(cfg, o.orderNumber).catch(() => null);
-        if (list) out.set(o.orderNumber, list.map((r) => String(pick(r, 'invoice_number') ?? 'sin N°')));
+        if (list)
+          out.set(
+            o.orderNumber,
+            list.map((r) => String(pick(r, 'invoice_number') ?? 'sin N°')),
+          );
       }),
     );
     progress(`Revisando boletas en Paris: ${Math.min(i + 5, orders.length)} de ${orders.length}…`);
@@ -192,6 +196,19 @@ export const paris: RetailProvider = {
     { key: 'authPath', label: 'Ruta del token', default: '/v1/auth/apiKey', help: 'Ajustable si la documentación de Cencosud indica otra' },
     { key: 'ordersPath', label: 'Ruta de órdenes', default: '/v1/orders' },
     { key: 'invoicePath', label: 'Ruta de boletas', default: '/v1/invoice', help: 'Donde se suben las boletas y facturas de cada orden' },
+    {
+      key: 'enviameApiKey',
+      label: 'Envíame · API Key (opcional)',
+      secret: true,
+      help: 'Para agendar retiros e imprimir etiquetas desde Cuadra. En app.enviame.io: Mi empresa / Configuración → API Key (si no aparece, pídela a soporte de Envíame)',
+    },
+    {
+      key: 'enviameSellerId',
+      label: 'Envíame · ID de empresa',
+      placeholder: '6091',
+      help: 'El número que aparece junto a tu empresa en Envíame (ej: 6091 - JERK HOME)',
+    },
+    { key: 'enviameBaseUrl', label: 'Envíame · URL de la API', default: 'https://api.enviame.io', help: 'Para pruebas: https://stage.api.enviame.io' },
   ],
 
   uploadInvoice,
@@ -222,7 +239,13 @@ export const paris: RetailProvider = {
 
   async products(cfg, progress) {
     // 1) Productos (cada variante es un SKU que se vende)
-    const found = await pages(cfg, '/v2/products/search', 50, (p) => str(pick(p, 'id')), (n) => progress(`Paris: ${n} productos leídos…`));
+    const found = await pages(
+      cfg,
+      '/v2/products/search',
+      50,
+      (p) => str(pick(p, 'id')),
+      (n) => progress(`Paris: ${n} productos leídos…`),
+    );
     // La búsqueda puede venir sin variantes: entonces se pide el detalle de cada producto
     const full: Record<string, unknown>[] = [];
     for (const [n, p] of found.entries()) {
@@ -234,9 +257,13 @@ export const paris: RetailProvider = {
     // 2) Stock de todos los SKU
     progress('Paris: leyendo stock…');
     const stock = new Map<string, number>();
-    const stockRows = await pages(cfg, '/v2/stock', 100, (r) => str(pick(r, 'sku', 'skuSeller')), (n) => progress(`Paris: stock de ${n} SKU leído…`)).catch(
-      () => [] as Record<string, unknown>[],
-    );
+    const stockRows = await pages(
+      cfg,
+      '/v2/stock',
+      100,
+      (r) => str(pick(r, 'sku', 'skuSeller')),
+      (n) => progress(`Paris: stock de ${n} SKU leído…`),
+    ).catch(() => [] as Record<string, unknown>[]);
     for (const r of stockRows) {
       const q = num(pick(r, 'quantity', 'stock', 'available'));
       if (q === null) continue;
@@ -259,9 +286,10 @@ export const paris: RetailProvider = {
           price: list,
           salePrice: sale,
           stock: stock.get(sku ?? '') ?? stock.get(sellerSku) ?? num(pick(v, 'stock', 'quantity')),
-          status: [str(pick(v, 'status', 'status.name')) ?? str(pick(p, 'status', 'status.name')), str(pick(p, 'statusApproval', 'statusApproval.name'))]
-            .filter(Boolean)
-            .join(' · ') || null,
+          status:
+            [str(pick(v, 'status', 'status.name')) ?? str(pick(p, 'status', 'status.name')), str(pick(p, 'statusApproval', 'statusApproval.name'))]
+              .filter(Boolean)
+              .join(' · ') || null,
           url: str(pick(p, 'url', 'channels.0.url')),
           imageUrl: str(pick(medias[0], 'src', 'url')),
           description: attrValue(p, /descrip/i),
@@ -364,7 +392,10 @@ function pricesOf(prices: Record<string, unknown>[]) {
 function rejected(res: Record<string, unknown>): string | null {
   const errors = arr(pick(res, 'errors', 'failed', 'data.errors', 'data.failed'));
   if (!errors.length) return null;
-  return errors.map((e) => str(pick(e, 'message', 'error', 'detail')) ?? JSON.stringify(e)).join(' · ').slice(0, 400);
+  return errors
+    .map((e) => str(pick(e, 'message', 'error', 'detail')) ?? JSON.stringify(e))
+    .join(' · ')
+    .slice(0, 400);
 }
 
 const typeCache = new Map<string, { types: Record<string, unknown>[]; store: string | null; until: number }>();
@@ -393,8 +424,20 @@ async function updatePrices(cfg: ProviderConfig, target: UpdateTarget, sku: stri
   const current = arr(pick(target.raw, 'variant.prices'));
   // El tipo "normal" es el del precio más alto que ya tiene el producto; si no, el que no es oferta
   const top = current.reduce<Record<string, unknown> | null>((a, b) => ((num(pick(b, 'value')) ?? 0) > (num(pick(a, 'value')) ?? -1) ? b : a), null);
-  const listType = str(pick(top, 'type.id')) ?? str(pick(types.find((t) => !isSaleType(String(pick(t, 'name') ?? ''))), 'id'));
-  const saleType = str(pick(types.find((t) => isSaleType(String(pick(t, 'name') ?? '')) && str(pick(t, 'id')) !== listType), 'id'));
+  const listType =
+    str(pick(top, 'type.id')) ??
+    str(
+      pick(
+        types.find((t) => !isSaleType(String(pick(t, 'name') ?? ''))),
+        'id',
+      ),
+    );
+  const saleType = str(
+    pick(
+      types.find((t) => isSaleType(String(pick(t, 'name') ?? '')) && str(pick(t, 'id')) !== listType),
+      'id',
+    ),
+  );
   if (!listType) throw new ProviderError('Paris no informó los tipos de precio (/v2/price-types)');
   const price = changes.price ?? target.price;
   if (!price) throw new ProviderError('Falta el precio normal');

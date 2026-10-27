@@ -15,6 +15,7 @@ import {
   Receipt,
   Shield,
   ShoppingBag,
+  Undo2,
   UserRound,
   Wallet,
   X,
@@ -34,6 +35,7 @@ import { Loading } from './ui';
 const NAV: { href: string; label: string; icon: LucideIcon; group: 'dia' | 'admin' }[] = [
   { href: '/', label: 'Inicio', icon: Home, group: 'dia' },
   { href: '/ventas', label: 'Ventas', icon: ShoppingBag, group: 'dia' },
+  { href: '/devoluciones', label: 'Devoluciones', icon: Undo2, group: 'dia' },
   { href: '/cobros', label: 'Cobros', icon: Wallet, group: 'dia' },
   { href: '/compras', label: 'Compras', icon: Receipt, group: 'dia' },
   { href: '/impuestos', label: 'Impuestos', icon: Landmark, group: 'dia' },
@@ -76,7 +78,9 @@ function AppShell({ children }: { children: ReactNode }) {
         <div className="max-w-sm text-center">
           <Logo className="justify-center" />
           <p className="mt-6 font-medium">No pudimos conectar con Cuadra</p>
-          <p className="mt-1 text-sm text-muted">{me.error instanceof Error ? me.error.message : 'El servidor no respondió.'} Revisa tu conexión e intenta de nuevo.</p>
+          <p className="mt-1 text-sm text-muted">
+            {me.error instanceof Error ? me.error.message : 'El servidor no respondió.'} Revisa tu conexión e intenta de nuevo.
+          </p>
           <button onClick={() => me.refetch()} className="mt-5 h-9 rounded-lg bg-brand-600 px-4 text-sm font-medium text-white hover:bg-brand-700">
             Reintentar
           </button>
@@ -93,7 +97,12 @@ function AppShell({ children }: { children: ReactNode }) {
       <div className="min-h-screen">
         <header className="sticky top-0 z-40 bg-graphite-900 text-white">
           <div className="mx-auto flex h-12 max-w-[1680px] items-center gap-2 px-3 sm:px-5">
-            <button onClick={() => setMenu(!menu)} className="rounded-md p-1.5 text-white/80 hover:bg-white/10 lg:hidden" aria-label="Menú" aria-expanded={menu}>
+            <button
+              onClick={() => setMenu(!menu)}
+              className="rounded-md p-1.5 text-white/80 hover:bg-white/10 lg:hidden"
+              aria-label="Menú"
+              aria-expanded={menu}
+            >
               {menu ? <X className="size-5" /> : <Menu className="size-5" />}
             </button>
             <Link href="/" className="mr-3 shrink-0" aria-label="Inicio">
@@ -202,10 +211,10 @@ function TenantSwitcher() {
   const user = me.data!;
   if (!user.tenantId && !user.tenants.length) return null;
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen(!open)}
-        className="flex max-w-[220px] items-center gap-2 rounded-md px-2 py-1 text-left text-[0.8125rem] text-white/85 hover:bg-white/10"
+        className="flex max-w-[150px] items-center sm:max-w-[220px] gap-2 rounded-md px-2 py-1 text-left text-[0.8125rem] text-white/85 hover:bg-white/10"
         aria-expanded={open}
         title="Cambiar de empresa"
       >
@@ -270,7 +279,11 @@ function UserMenu() {
             <p className="truncate text-sm font-medium">{user.name}</p>
             <p className="truncate text-xs text-muted">{user.email}</p>
           </div>
-          <Link href="/configuracion?tab=cuenta" onClick={() => setOpen(false)} className="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper">
+          <Link
+            href="/configuracion?tab=cuenta"
+            onClick={() => setOpen(false)}
+            className="mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper"
+          >
             <UserRound className="size-4 text-muted" /> Mi cuenta
           </Link>
           <Link href="/configuracion" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-paper">

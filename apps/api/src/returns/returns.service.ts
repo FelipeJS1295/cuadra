@@ -1,7 +1,70 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
+import { orderStateOfLines, PRICING_CHANNELS } from '@cuadra/shared';
 import { productReturns, retailers } from '../database/schema/index.js';
+import { courierOf } from '../sales/sales.service.js';
+
+/**
+ * Candidatos a N° de orden o seguimiento dentro de un texto leído por OCR: cada número de 6 o
+ * más caracteres, y los números vecinos de una misma línea unidos (el OCR separa los dígitos
+ * espaciados). Los más largos primero.
+ */
+export function textCandidates(text: string): string[] {
+  const out = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const tokens = line.match(/[A-Za-z0-9-]+/g) ?? [];
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i].replace(/^-+|-+$/g, '');
+      if (t.length >= 6 && /\d/.test(t)) out.add(t);
+      let joined = t;
+      for (let j = i + 1; j < Math.min(tokens.length, i + 3) && /^\d+$/.test(joined) && /^\d+$/.test(tokens[j]); j++) {
+        joined += tokens[j];
+        if (joined.length >= 8 && joined.length <= 20) out.add(joined);
+      }
+    }
+  }
+  return [...out]
+    .filter((c) => c.length <= 40)
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 25);
+}
+
+const LABELS: Record<string, string> = Object.fromEntries(PRICING_CHANNELS.map((c) => [c.code, c.label]));
+/** Escapa % y _ para usar el código en un LIKE */
+const likeSafe = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+const reSafe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Orden encontrada al escanear el código de una devolución */
+export interface ScannedOrder {
+  retailerCode: string;
+  retailer: string;
+  orderNumber: string;
+  orderDate: string | null;
+  dispatchDeadline: string | null;
+  deliveredAt: string | null;
+  customer: string | null;
+  commune: string | null;
+  courier: string | null;
+  tracking: string | null;
+  state: string;
+  /** Por qué calzó: N° de orden, seguimiento o un código dentro de los datos de la orden */
+  matchedBy: string;
+  lines: { saleId: string; product: string; retailName: string | null; parentSku: string | null; sku: string | null; quantity: number }[];
+  /** Devolución ya registrada para esta orden */
+  existing: { id: string; status: string; receivedAt: string | null; productCondition: string | null } | null;
+}
+
+export interface ReceiveInput {
+  retailerCode: string;
+  orderNumber: string;
+  code: string;
+  scope: 'TOTAL' | 'PARCIAL';
+  products: string[];
+  productCondition: 'BUENO' | 'DANADO';
+  reason: string;
+  notes: string | null;
+}
 
 export const RETURN_STATUSES = ['SOLICITADA', 'EN_TRANSITO', 'RECIBIDA', 'CERRADA', 'RECHAZADA'] as const;
 
@@ -127,6 +190,213 @@ export class ReturnsService {
     });
   }
 
+  /**
+   * Busca la venta de un código escaneado: N° de orden o sub-orden, código de seguimiento, o
+   * cualquier código que venga en los datos de la orden (bulto, guía del courier…).
+   */
+  /**
+   * Números leídos con la cámara (OCR) de la etiqueta: se arman candidatos (cada número, y los
+   * que vienen separados por espacios como "4792638001 690") y se busca la orden con cada uno.
+   * Ej.: la etiqueta de devolución de Walmart trae la OC en "REFERENCIA" y su código de barras
+   * es la guía de Bluexpress.
+   */
+  async lookupText(text: string): Promise<{ code: string; candidates: string[]; orders: ScannedOrder[] }> {
+    const candidates = textCandidates(text);
+    const orders = new Map<string, ScannedOrder>();
+    let code = '';
+    for (const c of candidates) {
+      const r = await this.lookup(c, false);
+      for (const o of r.orders) {
+        const key = `${o.retailerCode}|${o.orderNumber}`;
+        if (!orders.has(key)) orders.set(key, { ...o, matchedBy: `número leído ${c}` });
+        code ||= c;
+      }
+      if (orders.size >= 5) break;
+    }
+    return { code: code || candidates[0] || '', candidates, orders: [...orders.values()] };
+  }
+
+  async lookup(rawCode: string, deep = true): Promise<{ code: string; orders: ScannedOrder[] }> {
+    const code = rawCode.trim().replace(/\s+/g, '');
+    if (code.length < 4) throw new BadRequestException('El código es muy corto');
+    if (code.length > 120) throw new BadRequestException('El código es muy largo');
+    const up = code.toUpperCase();
+    const quoted = `%"${likeSafe(code)}"%`;
+    const sub = `${likeSafe(up)}-%`;
+    // Número dentro del JSON de la orden (ej: "trackingNumber": 123456789)
+    const numeric = /^\d+$/.test(code) ? `[:\\[,] ?${reSafe(code)}[,}\\]]` : null;
+
+    const { rows } = await this.db.execute<{
+      id: string;
+      code: string;
+      name: string;
+      order_number: string | null;
+      tracking_code: string | null;
+      order_date: string | null;
+      dispatch_deadline: string | null;
+      delivered_at: string | null;
+      customer: string | null;
+      commune: string | null;
+      carrier: string | null;
+      product: string | null;
+      own_name: string | null;
+      parent_sku: string | null;
+      sku: string | null;
+      quantity: number;
+      status: string | null;
+      matched_by: string;
+    }>(sql`
+      with api_hits as (
+        select o.id::text as id
+        from retail_api_orders o
+        where o.order_date >= now() - interval '400 days'
+          and (upper(o.order_number) = ${up} or upper(o.customer_order_id) = ${up} or upper(o.external_id) = ${up}
+               ${deep ? sql`or o.raw::text ilike ${quoted}` : sql``}
+               ${deep && numeric ? sql`or o.raw::text ~ ${numeric}` : sql``})
+        limit 20
+      )
+      select s.id, r.code, r.name, s.order_number, s.tracking_code,
+        s.order_date::date::text as order_date, s.dispatch_deadline::text as dispatch_deadline, s.delivered_at::text as delivered_at,
+        coalesce(s.customer_name, s.shipping_name) as customer, s.shipping_commune as commune, s.carrier,
+        s.product_name as product, sn.name as own_name, sn.parent_sku, s.seller_sku as sku, s.quantity, s.status,
+        case
+          when upper(s.order_number) = ${up} or upper(s.order_id) = ${up} or upper(s.order_number) like ${sub} then 'N° de orden'
+          when upper(s.tracking_code) = ${up} then 'Código de seguimiento'
+          else 'Código del paquete'
+        end as matched_by
+      from sales_records s
+      join retailers r on r.id = s.retailer_id
+      left join retail_sku_names sn on sn.provider = r.code and sn.seller_sku = upper(s.seller_sku)
+      where s.order_date >= now() - interval '400 days'
+        and (upper(s.order_number) = ${up} or upper(s.order_id) = ${up} or upper(s.tracking_code) = ${up}
+             or upper(s.external_item_id) = ${up}
+             or upper(s.order_number) like ${sub}
+             or s.raw->>'apiOrderId' in (select id from api_hits)
+             ${deep ? sql`or s.raw::text ilike ${quoted}` : sql``})
+      order by s.order_date desc, s.order_number
+      limit 60
+    `);
+
+    const groups = new Map<string, ScannedOrder & { statuses: (string | null)[] }>();
+    for (const r of rows) {
+      const key = `${r.code}|${r.order_number ?? r.id}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          retailerCode: r.code,
+          retailer: LABELS[r.code] ?? r.name,
+          orderNumber: r.order_number ?? '—',
+          orderDate: r.order_date,
+          dispatchDeadline: r.dispatch_deadline,
+          deliveredAt: r.delivered_at,
+          customer: r.customer,
+          commune: r.commune,
+          courier: courierOf(r.code, r.carrier) ?? r.carrier,
+          tracking: r.tracking_code,
+          state: '',
+          matchedBy: r.matched_by,
+          lines: [],
+          existing: null,
+          statuses: [],
+        };
+        groups.set(key, g);
+      }
+      g.statuses.push(r.status);
+      g.lines.push({
+        saleId: r.id,
+        product: (r.own_name ?? r.product ?? r.sku ?? 'Producto').trim(),
+        retailName: r.own_name ? r.product : null,
+        parentSku: r.parent_sku,
+        sku: r.sku,
+        quantity: Number(r.quantity) || 1,
+      });
+    }
+    const orders = [...groups.values()].map(({ statuses, ...g }) => ({ ...g, state: orderStateOfLines(statuses) }));
+
+    // Devolución ya registrada de cada orden (la más reciente)
+    if (orders.length) {
+      const { rows: prev } = await this.db.execute<{
+        id: string;
+        code: string;
+        order_number: string;
+        status: string;
+        received_at: string | null;
+        product_condition: string | null;
+      }>(sql`
+        select distinct on (r.code, pr.order_number) pr.id, r.code, pr.order_number, pr.status, pr.received_at::text as received_at, pr.product_condition
+        from product_returns pr join retailers r on r.id = pr.retailer_id
+        where pr.order_number in ${orders.map((o) => o.orderNumber)}
+        order by r.code, pr.order_number, pr.created_at desc
+      `);
+      for (const o of orders) {
+        const p = prev.find((x) => x.code === o.retailerCode && x.order_number === o.orderNumber);
+        if (p) o.existing = { id: p.id, status: p.status, receivedAt: p.received_at, productCondition: p.product_condition };
+      }
+    }
+    return { code, orders };
+  }
+
+  /**
+   * Marca la devolución como recibida en bodega. Si la orden ya tenía una devolución abierta
+   * (solicitada o en tránsito) se actualiza; si no, se crea.
+   */
+  async receive(input: ReceiveInput, userId: string | null) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
+    const retailerId = await this.retailerId(input.retailerCode);
+    const detail = [
+      input.scope === 'PARCIAL' && input.products.length ? `Productos recibidos: ${input.products.join(', ')}` : null,
+      `Escaneado: ${input.code}`,
+      input.notes,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const [open] = await this.db
+      .select({ id: productReturns.id, notes: productReturns.notes, trackingCode: productReturns.trackingCode })
+      .from(productReturns)
+      .where(
+        and(
+          eq(productReturns.retailerId, retailerId),
+          eq(productReturns.orderNumber, input.orderNumber),
+          sql`${productReturns.status} in ('SOLICITADA', 'EN_TRANSITO')`,
+        ),
+      )
+      .limit(1);
+    if (open) {
+      await this.db
+        .update(productReturns)
+        .set({
+          status: 'RECIBIDA',
+          receivedAt: today,
+          productCondition: input.productCondition,
+          scope: input.scope,
+          trackingCode: open.trackingCode ?? input.code.slice(0, 80),
+          notes: [open.notes, detail].filter(Boolean).join('\n'),
+        })
+        .where(eq(productReturns.id, open.id));
+      return { id: open.id, updated: true };
+    }
+    const row = await this.create(
+      {
+        retailerCode: input.retailerCode,
+        orderNumber: input.orderNumber,
+        requestedAt: today,
+        scope: input.scope,
+        reason: input.reason,
+        status: 'RECIBIDA',
+        receivedAt: today,
+        productCondition: input.productCondition,
+        refundGross: null,
+        reverseLogisticsCost: null,
+        supplierAction: 'NINGUNA',
+        supplierCreditGross: null,
+        trackingCode: input.code.slice(0, 80),
+        notes: detail,
+      },
+      userId,
+    );
+    return { id: row.id, updated: false };
+  }
+
   private async retailerId(code: string) {
     const [r] = await this.db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, code.toUpperCase()));
     if (!r) throw new BadRequestException(`Retailer "${code}" no existe`);
@@ -154,7 +424,10 @@ export class ReturnsService {
   }
 
   async remove(id: string) {
-    const [row] = await this.db.delete(productReturns).where(and(eq(productReturns.id, id))).returning({ id: productReturns.id });
+    const [row] = await this.db
+      .delete(productReturns)
+      .where(and(eq(productReturns.id, id)))
+      .returning({ id: productReturns.id });
     if (!row) throw new NotFoundException('La devolución no existe');
     return { deleted: true };
   }

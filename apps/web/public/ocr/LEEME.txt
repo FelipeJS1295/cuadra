@@ -1,0 +1,4 @@
+Archivos para leer números de las etiquetas con la cámara (Devoluciones → Leer número).
+Se sirven desde Cuadra para no depender de servicios externos.
+- worker.min.js, tesseract-core-*.wasm.js: tesseract.js 5.1.1 (Apache-2.0)
+- eng.traineddata.gz: tessdata 4.0.0_best_int (Apache-2.0)

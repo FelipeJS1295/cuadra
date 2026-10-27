@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CloudUpload, FileText, PackageCheck, RefreshCw, Search, Send, ShoppingBag, Truck, Upload } from 'lucide-react';
+import { CalendarClock, CloudUpload, FileText, PackageCheck, Printer, RefreshCw, Search, Send, ShoppingBag, Truck, Upload } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useMemo, useState } from 'react';
 import { BulkDialog, SelectionBar, type BulkKind } from '@/components/bulk-actions';
@@ -10,6 +10,7 @@ import { useSession } from '@/components/session';
 import { Button, Card, clp, Empty, ErrorBox, Loading, monthRange, MonthPicker, Page, Pill, dmy, Tabs, td, th, todayCL } from '@/components/ui';
 import { DispatchBoard } from '@/components/dispatch-board';
 import { FacturaLote } from '@/components/factura-lote';
+import { ParisLabels, ParisPickups } from '@/components/paris-logistics';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -144,6 +145,10 @@ function Sales() {
   const [board, setBoard] = useState(false);
   const [sending, setSending] = useState(false);
   const [facturing, setFacturing] = useState(false);
+  const [pickups, setPickups] = useState(false);
+  const [labels, setLabels] = useState(false);
+  // Envíame (Paris): retiros y etiquetas
+  const enviame = useQuery({ queryKey: ['enviame-status'], queryFn: api.enviameStatus, staleTime: 300_000 });
   const [detail, setDetail] = useState<SaleRow | null>(null);
   const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -265,6 +270,11 @@ function Sales() {
           <Button variant="secondary" onClick={() => setBoard(true)}>
             <Truck className="size-4" /> Maestra de despachos
           </Button>
+          {canEdit && enviame.data?.connected && (
+            <Button variant="secondary" onClick={() => setPickups(true)}>
+              <CalendarClock className="size-4" /> Retiros Paris
+            </Button>
+          )}
           {canEdit && (
             <>
               <Button variant="secondary" onClick={() => setUpload(true)}>
@@ -399,7 +409,9 @@ function Sales() {
                       <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Elegir todas" className="size-4 accent-brand-600" />
                     </th>
                   )}
-                  <th className={thc} title="Fecha en que hay que despachar (entregar al courier)">Despacho</th>
+                  <th className={thc} title="Fecha en que hay que despachar (entregar al courier)">
+                    Despacho
+                  </th>
                   <th className={thc}>Cliente</th>
                   <th className={thc}>OC</th>
                   <th className={thc}>Producto</th>
@@ -445,7 +457,11 @@ function Sales() {
                       )}
                       <td className={cn(tdc, 'num whitespace-nowrap text-muted')} title={`Compra: ${dmy(s.orderDate)}`}>
                         {s.dispatchDeadline ? (
-                          <span className={cn(!s.cancelled && s.state !== 'ENTREGADA' && s.state !== 'EN_CAMINO' && s.dispatchDeadline < todayCL() && 'text-berry-700')}>
+                          <span
+                            className={cn(
+                              !s.cancelled && s.state !== 'ENTREGADA' && s.state !== 'EN_CAMINO' && s.dispatchDeadline < todayCL() && 'text-berry-700',
+                            )}
+                          >
                             {dmy(s.dispatchDeadline)}
                           </span>
                         ) : (
@@ -464,7 +480,10 @@ function Sales() {
                           </span>
                         )}
                         {s.source === 'CLIENTE' && (
-                          <span title="Te la envió tu cliente desde Cuadra" className="rounded-full bg-brand-50 px-1.5 py-px text-[10px] font-semibold text-brand-700">
+                          <span
+                            title="Te la envió tu cliente desde Cuadra"
+                            className="rounded-full bg-brand-50 px-1.5 py-px text-[10px] font-semibold text-brand-700"
+                          >
                             CUADRA
                           </span>
                         )}
@@ -561,6 +580,16 @@ function Sales() {
       {upload && <UploadDialog kind="ventas" onClose={() => setUpload(false)} />}
       {syncing && <SyncDialog onClose={() => setSyncing(false)} />}
       {board && <DispatchBoard onClose={() => setBoard(false)} />}
+      {pickups && <ParisPickups onClose={() => setPickups(false)} />}
+      {labels && (
+        <ParisLabels
+          sales={chosen}
+          onClose={() => {
+            setLabels(false);
+            setSelected(new Set());
+          }}
+        />
+      )}
       {facturing && (
         <FacturaLote
           sales={chosen}
@@ -611,6 +640,15 @@ function Sales() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FileText className="size-4" /> Una factura ({chosen.length})
+                </button>
+              )}
+              {/* Paris: etiquetas de Envíame en un PDF */}
+              {canEdit && enviame.data?.connected && chosen.some((s) => s.retailerCode === 'CENCOSUD') && (
+                <button
+                  onClick={() => setLabels(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20"
+                >
+                  <Printer className="size-4" /> Etiquetas Paris ({new Set(chosen.filter((s) => s.retailerCode === 'CENCOSUD').map((s) => s.orderNumber)).size})
                 </button>
               )}
               {/* Empresas de compra y venta: enviar las ventas al proveedor (si usa Cuadra) */}
