@@ -40,7 +40,8 @@ export default function HomePage() {
           <Sparkles className="size-5 text-brand-600" />
           <div className="min-w-56 flex-1">
             <p className="font-medium">
-              Te faltan {onboarding.data.total - onboarding.data.completed} {onboarding.data.total - onboarding.data.completed === 1 ? 'paso' : 'pasos'} para dejar todo listo
+              Te faltan {onboarding.data.total - onboarding.data.completed} {onboarding.data.total - onboarding.data.completed === 1 ? 'paso' : 'pasos'} para
+              dejar todo listo
             </p>
             <div className="mt-2 max-w-sm">
               <Progress value={onboarding.data.completed} total={onboarding.data.total} />
@@ -58,14 +59,25 @@ export default function HomePage() {
         <>
           {/* Las cuatro cifras del mes en un solo estado de cuenta */}
           <Card className="grid gap-px overflow-hidden bg-line sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Vendiste" value={clp(d.sold)} href="/ventas" sub={`${d.orders} ${d.orders === 1 ? 'venta' : 'ventas'}${d.cancelled ? `, ${d.cancelled} canceladas` : ''}`} />
-            <Stat label="Te pagaron" value={clp(d.paid)} href="/cobros" tone="verde" sub="Depositado por los retailers" />
+            <Stat
+              label="Vendiste"
+              value={clp(d.sold)}
+              href="/ventas"
+              sub={`${d.orders} ${d.orders === 1 ? 'venta' : 'ventas'}${d.cancelled ? `, ${d.cancelled} canceladas` : ''}`}
+            />
+            <Stat label="Te pagaron" value={clp(d.paid)} href="/cobros" tone="verde" sub={`De lo vendido en ${monthLabel(month).split(' ')[0]}`} />
             <Stat
               label="Te deben"
               value={clp(d.owed)}
               href="/cobros"
               tone={d.owedOverdue > 0 ? 'rojo' : undefined}
-              sub={d.owedOverdue > 0 ? <span className="text-berry-700">{clp(d.owedOverdue)} atrasado</span> : 'Nada atrasado'}
+              sub={
+                d.owedOverdue > 0 ? (
+                  <span className="text-berry-700">{clp(d.owedOverdue)} atrasado</span>
+                ) : (
+                  `De lo vendido en ${monthLabel(month).split(' ')[0]}, nada atrasado`
+                )
+              }
             />
             <Stat
               label="Ganaste"
@@ -165,7 +177,9 @@ function Stat({ label, value, sub, tone, href }: { label: string; value: string;
   const body = (
     <div className={cn('h-full bg-white px-5 py-5 transition-colors', href && 'hover:bg-[#fafbfc]')}>
       <p className="text-sm text-muted">{label}</p>
-      <p className={cn('figure mt-2 text-[1.85rem] leading-none font-semibold', tone === 'verde' && 'text-money-700', tone === 'rojo' && 'text-berry-700')}>{value}</p>
+      <p className={cn('figure mt-2 text-[1.85rem] leading-none font-semibold', tone === 'verde' && 'text-money-700', tone === 'rojo' && 'text-berry-700')}>
+        {value}
+      </p>
       <p className="mt-2 text-sm text-muted">{sub}</p>
     </div>
   );

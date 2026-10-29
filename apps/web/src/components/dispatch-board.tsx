@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { Printer, Truck, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DispatchLine } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { Empty, ErrorBox, Loading, todayCL } from './ui';
@@ -12,6 +12,58 @@ const NO_DATE = 'sin-fecha';
 /** "2026-10-27" -> "27-10-2026" */
 const dmyDash = (d: string) => d.split('-').reverse().join('-');
 const weekday = (d: string) => new Intl.DateTimeFormat('es-CL', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${d}T12:00:00Z`)).replace('.', '');
+
+/** Estilos del cuadro impreso (la hoja se arma aparte, sin el resto de la página) */
+const PRINT_CSS = `
+@page { size: landscape; margin: 8mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+table { border-collapse: collapse; font-size: 12px; }
+th, td { border: 1px solid #9aa3ad; padding: 3px 7px; text-align: center; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 180px; max-width: 300px; }
+thead th { background: #eef1f5; font-weight: 700; }
+thead th span { display: block; font-weight: 400; font-size: 10px; color: #555; text-transform: capitalize; }
+.dispatch-group td { background: #2f5bd3; color: #fff; font-weight: 700; font-size: 13px; }
+tfoot td { background: #eef1f5; font-weight: 700; }
+`;
+
+/**
+ * Imprime solo el cuadro, en una hoja horizontal: se copia a un marco aparte y se achica
+ * lo necesario para que quepa en una página (carta o A4).
+ */
+function printTable(table: HTMLTableElement) {
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1800px;height:1200px;border:0;';
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument!;
+  doc.open();
+  doc.write(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Maestra de despachos</title><style>${PRINT_CSS}</style></head><body>${table.outerHTML}</body></html>`,
+  );
+  doc.close();
+  const t = doc.querySelector('table')!;
+  const box = doc.createElement('div');
+  box.appendChild(t);
+  doc.body.appendChild(box);
+  // Área útil de una hoja horizontal (la menor entre carta y A4, con 8 mm de margen), en px,
+  // con un 4% de holgura para que nunca pase a una segunda hoja
+  const mm = 96 / 25.4;
+  const { width, height } = t.getBoundingClientRect();
+  // Si el cuadro es chico se agranda un poco (hasta 1,5x) para que se lea mejor de lejos
+  const scale = Math.min(1.5, (263 * mm) / width, (193 * mm) / height) * 0.96;
+  // Se achica con transform (el zoom no evita que el navegador corte la tabla en dos hojas)
+  // y se recorta el alto al tamaño ya achicado, para que no salga una hoja en blanco.
+  box.style.cssText = `transform: scale(${scale}); transform-origin: 0 0; width: ${Math.ceil(width)}px;`;
+  doc.documentElement.style.cssText = doc.body.style.cssText = `height: ${Math.ceil(height * scale) + 2}px; overflow: hidden;`;
+  const w = frame.contentWindow!;
+  const done = () => setTimeout(() => frame.remove(), 500);
+  w.addEventListener('afterprint', done);
+  w.focus();
+  w.print();
+  // Safari no siempre avisa "afterprint"
+  setTimeout(done, 60_000);
+}
 
 interface Group {
   courier: string;
@@ -28,7 +80,7 @@ interface Group {
 /**
  * Maestra de despachos: cuántas unidades de cada producto hay que tener listas para cada retiro,
  * agrupadas por quién retira (Bluexpress, Starken, Ripley…) y por fecha límite de despacho.
- * Se puede imprimir (sale solo la tabla, en horizontal).
+ * Se puede imprimir: sale solo el cuadro, en una hoja horizontal.
  */
 export function DispatchBoard({ onClose }: { onClose: () => void }) {
   const q = useQuery({
@@ -47,6 +99,7 @@ export function DispatchBoard({ onClose }: { onClose: () => void }) {
   const lines = useMemo(() => (q.data ?? []).filter((l) => !courier || l.courier === courier), [q.data, courier]);
   const couriers = useMemo(() => [...new Set((q.data ?? []).map((l) => l.courier))].sort(), [q.data]);
   const { dates, groups, byDate, total } = useMemo(() => pivot(lines), [lines]);
+  const tableRef = useRef<HTMLTableElement>(null);
 
   return (
     <div
@@ -67,7 +120,7 @@ export function DispatchBoard({ onClose }: { onClose: () => void }) {
           </div>
           <div className="no-print flex items-center gap-2">
             <button
-              onClick={() => window.print()}
+              onClick={() => tableRef.current && printTable(tableRef.current)}
               disabled={!lines.length}
               className="inline-flex h-9 items-center gap-2 rounded-lg bg-brand-600 px-4 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-45"
             >
@@ -105,7 +158,7 @@ export function DispatchBoard({ onClose }: { onClose: () => void }) {
             />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-line">
-              <table className="dispatch-table w-full border-collapse text-sm">
+              <table ref={tableRef} className="dispatch-table w-full border-collapse text-sm">
                 <thead>
                   <tr className="bg-[#eef1f5]">
                     <th className="sticky left-0 z-10 min-w-56 border-b border-line bg-[#eef1f5] px-3 py-2 text-left text-xs font-medium tracking-wide text-muted uppercase">

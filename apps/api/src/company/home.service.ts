@@ -63,6 +63,13 @@ export class HomeService {
     const sum = (f: (r: (typeof rows)[number]) => number | null) => Math.round(valid.reduce((n, r) => n + (f(r) ?? 0), 0));
     const done = valid.filter((r) => r.total !== null);
     const vatMonth = vatMonths.find((v) => v.month === m) ?? null;
+    // Lo que te deben de las ventas de este mes (las de otros meses no entran en el resumen)
+    const monthOwed = cxc.items.filter((i) => {
+      const d = String(i.orderDate ?? '').slice(0, 10);
+      return d >= from && d <= last;
+    });
+    const owed = monthOwed.reduce((n, i) => n + i.expected, 0);
+    const owedOverdue = monthOwed.filter((i) => i.daysOverdue > 0).reduce((n, i) => n + i.expected, 0);
 
     const tasks: Task[] = [];
     const noReceipt = valid.filter((r) => !r.receipt && r.orderNumber);
@@ -76,7 +83,9 @@ export class HomeService {
         count: noReceipt.length,
         tone: 'rojo',
       });
-    const cancelledWithReceipt = rows.filter((r) => r.cancelled && r.receipt && ['EMITIDA', 'REGISTRADA'].includes(r.receipt.status) && r.receipt.creditNotes < r.receipt.totalGross);
+    const cancelledWithReceipt = rows.filter(
+      (r) => r.cancelled && r.receipt && ['EMITIDA', 'REGISTRADA'].includes(r.receipt.status) && r.receipt.creditNotes < r.receipt.totalGross,
+    );
     if (cancelledWithReceipt.length)
       tasks.push({
         id: 'notas-credito',
@@ -90,8 +99,8 @@ export class HomeService {
     if (cxc.totals.overdue > 0)
       tasks.push({
         id: 'cobrar',
-        title: `Los retailers te deben ${clp(cxc.totals.overdue)} atrasado`,
-        why: 'Son ventas que ya debieron pagarte según los días de pago de cada retailer.',
+        title: `Los retailers te deben ${clp(cxc.totals.overdue)} atrasado (todos los meses)`,
+        why: 'Son ventas que ya debieron pagarte según los días de pago de cada retailer, de cualquier mes.',
         action: 'Ver quién te debe',
         href: '/cobros',
         count: cxc.items.filter((i) => i.daysOverdue > 0).length,
@@ -133,8 +142,8 @@ export class HomeService {
       orders: valid.length,
       cancelled: rows.length - valid.length,
       paid: sum((r) => r.settlementNet),
-      owed: Math.round(cxc.totals.expected),
-      owedOverdue: Math.round(cxc.totals.overdue),
+      owed: Math.round(owed),
+      owedOverdue: Math.round(owedOverdue),
       // Costo de lo vendido: facturas de proveedor (revendedor) o insumos (fabricante)
       supplierCost: fab ? sum((r) => r.costGross) : sum((r) => r.supplierGross),
       vatToPay: vatMonth ? Math.round(vatMonth.balance) : null,
