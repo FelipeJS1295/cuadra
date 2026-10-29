@@ -17,3 +17,4 @@ export * from './documents.js';
 export * from './retail-api.js';
 export * from './tenant.js';
 export * from './b2b.js';
+export * from './activity.js';

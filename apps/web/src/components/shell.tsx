@@ -63,6 +63,13 @@ function AppShell({ children }: { children: ReactNode }) {
   }, [me.data, pathname, router]);
   // Al navegar se cierra el menú en el celular
   useEffect(() => setMenu(false), [pathname]);
+  // Página abierta (actividad que ve el administrador del sistema)
+  const logged = Boolean(me.data);
+  useEffect(() => {
+    if (!logged) return;
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    api.trackPage(`${pathname}${tab ? `?tab=${tab}` : ''}`).catch(() => undefined);
+  }, [pathname, logged]);
 
   // Sin sesión en la portada: la página de presentación de Cuadra
   const unauthenticated = me.isError && (me.error as { status?: number }).status === 401;

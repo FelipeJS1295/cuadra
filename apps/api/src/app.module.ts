@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AccountingModule } from './accounting/accounting.module.js';
+import { ActivityModule } from './activity/activity.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { B2bModule } from './b2b/b2b.module.js';
@@ -27,6 +28,7 @@ import { SiiModule } from './sii/sii.module.js';
     DatabaseModule,
     SettingsModule,
     AuthModule,
+    ActivityModule,
     AdminModule,
     CompanyModule,
     HealthModule,

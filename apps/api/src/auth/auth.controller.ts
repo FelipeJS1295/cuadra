@@ -1,5 +1,6 @@
-import { Body, Controller, ForbiddenException, Get, HttpCode, Post, Res } from '@nestjs/common';
-import type { Response } from 'express';
+import { Body, Controller, ForbiddenException, Get, HttpCode, Post, Req, Res } from '@nestjs/common';
+import type { Request, Response } from 'express';
+import { ActivityService } from '../activity/activity.service.js';
 import { z } from 'zod';
 import { validate } from '../products/catalog.validation.js';
 import { siiRut } from '../sii/rut.js';
@@ -56,7 +57,10 @@ function setSession(res: Response, token: string, tenantId?: string | null) {
  */
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly activity: ActivityService,
+  ) {}
 
   @Public()
   @Post('signup')
@@ -71,11 +75,37 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(200)
-  async login(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { email, password } = validate(loginSchema, body);
-    const { token, firstTenantId } = await this.auth.login(email, password);
-    setSession(res, token, firstTenantId);
-    return { ok: true };
+    try {
+      const { token, firstTenantId, userId } = await this.auth.login(email, password);
+      setSession(res, token, firstTenantId);
+      this.activity.record({
+        kind: 'LOGIN',
+        description: 'Inició sesión',
+        userId,
+        companyId: firstTenantId,
+        method: 'POST',
+        path: '/api/auth/login',
+        status: 200,
+        req,
+      });
+      return { ok: true };
+    } catch (err) {
+      // Intento fallido: se anota con el correo que escribió (si existe ese usuario, queda a su nombre)
+      const userId = await this.auth.userIdOf(email).catch(() => null);
+      this.activity.record({
+        kind: 'LOGIN_FALLIDO',
+        description: `Intento de ingreso fallido: ${(err as Error).message}`,
+        userId,
+        method: 'POST',
+        path: '/api/auth/login',
+        status: 401,
+        req,
+        detail: { email },
+      });
+      throw err;
+    }
   }
 
   @Public()

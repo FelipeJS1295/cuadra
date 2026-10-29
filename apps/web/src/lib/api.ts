@@ -763,6 +763,54 @@ export interface AdminTenant {
   owner: string | null;
 }
 
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  isActive: boolean;
+  isSuperadmin: boolean;
+  mustChangePassword: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+  lastSeen: string | null;
+  companies: { id: string; name: string; role: string; active: boolean }[];
+  logins30: number;
+  loginsTotal: number;
+  failed30: number;
+  actions30: number;
+  pages30: number;
+  days30: number;
+}
+export type ActivityKind = 'LOGIN' | 'LOGIN_FALLIDO' | 'PAGINA' | 'ACCION';
+export interface ActivityEvent {
+  id: string;
+  kind: ActivityKind;
+  description: string;
+  path: string | null;
+  status: number | null;
+  ip: string | null;
+  device: string | null;
+  at: string;
+  user: { id: string | null; name: string | null; email: string | null } | null;
+  company: { id: string; name: string | null } | null;
+}
+export interface ActivitySummary {
+  days: number;
+  pages: { name: string; n: number }[];
+  actions: { name: string; n: number; failed: number }[];
+  byDay: { day: string; logins: number; actions: number; pages: number }[];
+}
+export interface ActivityFilters {
+  tenantId?: string;
+  userId?: string;
+  kind?: ActivityKind | '';
+  days?: number;
+}
+const qs = (o: Record<string, string | number | undefined | null>) => {
+  const p = Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  return p.length ? `?${p.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&')}` : '';
+};
+
 // ===================== Maestra de retailers =====================
 
 export type PaymentBase = 'ORDEN' | 'DESPACHO';
@@ -1032,6 +1080,7 @@ async function handle<T>(res: Response): Promise<T> {
     }
     throw Object.assign(new Error(message), { status: res.status });
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -1404,6 +1453,14 @@ export const api = {
   adminUpdateTenant: (id: string, data: { plan?: string; status?: string; trialEndsAt?: string | null }) =>
     request<{ ok: boolean }>(`/admin/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   adminEnter: (id: string) => request<{ ok: boolean }>(`/admin/tenants/${id}/enter`, { method: 'POST' }),
+  adminUsers: (tenantId?: string) => request<AdminUser[]>(`/admin/users${qs({ tenantId })}`),
+  adminActivity: (f: ActivityFilters, before?: string) => request<ActivityEvent[]>(`/admin/activity${qs({ ...f, before })}`),
+  adminActivitySummary: (f: ActivityFilters) =>
+    request<ActivitySummary>(`/admin/activity/summary${qs({ tenantId: f.tenantId, userId: f.userId, days: f.days })}`),
+  adminSetPassword: (userId: string, password: string, mustChange: boolean) =>
+    request<{ ok: boolean }>(`/admin/users/${userId}/password`, { method: 'POST', body: JSON.stringify({ password, mustChange }) }),
+  /** Avisa qué página abrió el usuario (actividad para el administrador) */
+  trackPage: (path: string) => request<void>('/activity/page', { method: 'POST', body: JSON.stringify({ path }) }),
 
   /** Valida la respuesta con el mismo schema Zod que usa el backend */
   health: async (): Promise<HealthResponse> => healthResponseSchema.parse(await request<unknown>('/health')),

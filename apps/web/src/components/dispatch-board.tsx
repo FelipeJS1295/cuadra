@@ -53,9 +53,10 @@ function printTable(table: HTMLTableElement) {
   // Si el cuadro es chico se agranda un poco (hasta 1,5x) para que se lea mejor de lejos
   const scale = Math.min(1.5, (263 * mm) / width, (193 * mm) / height) * 0.96;
   // Se achica con transform (el zoom no evita que el navegador corte la tabla en dos hojas)
-  // y se recorta el alto al tamaño ya achicado, para que no salga una hoja en blanco.
+  // y la hoja se recorta al alto de una página (no al alto medido: al imprimir las filas pueden
+  // quedar un poco más altas y se cortaba el total). Lo achicado siempre cabe en esa página.
   box.style.cssText = `transform: scale(${scale}); transform-origin: 0 0; width: ${Math.ceil(width)}px;`;
-  doc.documentElement.style.cssText = doc.body.style.cssText = `height: ${Math.ceil(height * scale) + 2}px; overflow: hidden;`;
+  doc.documentElement.style.cssText = doc.body.style.cssText = 'height: 100vh; overflow: hidden;';
   const w = frame.contentWindow!;
   const done = () => setTimeout(() => frame.remove(), 500);
   w.addEventListener('afterprint', done);

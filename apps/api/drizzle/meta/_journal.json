@@ -99,6 +99,13 @@
       "when": 1793125735149,
       "tag": "0013_walmart_fecha_chile",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793279892209,
+      "tag": "0014_actividad_usuarios",
+      "breakpoints": true
     }
   ]
 }

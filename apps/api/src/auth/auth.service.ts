@@ -74,14 +74,17 @@ export class AuthService implements OnModuleInit {
     }
     this.failed.delete(email);
     await this.db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
-    return { token: this.tokenFor(user), firstTenantId: (await this.tenantsOf(user.id))[0]?.id ?? null };
+    return { token: this.tokenFor(user), firstTenantId: (await this.tenantsOf(user.id))[0]?.id ?? null, userId: user.id };
+  }
+
+  /** Id del usuario con ese correo (para anotar intentos fallidos) */
+  async userIdOf(email: string) {
+    const [u] = await this.db.select({ id: users.id }).from(users).where(eq(users.email, email.trim().toLowerCase()));
+    return u?.id ?? null;
   }
 
   tokenFor(user: User) {
-    return signSession(
-      { sub: user.id, pf: passwordFingerprint(user.passwordHash), exp: Math.floor(Date.now() / 1000) + sessionDays() * 86400 },
-      authSecret(),
-    );
+    return signSession({ sub: user.id, pf: passwordFingerprint(user.passwordHash), exp: Math.floor(Date.now() / 1000) + sessionDays() * 86400 }, authSecret());
   }
 
   /** Registro: crea la persona, su empresa (con prueba gratis) y la deja como DUEÑO */
