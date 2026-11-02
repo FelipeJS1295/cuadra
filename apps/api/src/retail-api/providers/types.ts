@@ -142,7 +142,7 @@ export interface NormalizedSettlement {
 export type Progress = (message: string) => void;
 
 export interface RetailProvider {
-  code: 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE';
+  code: 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE' | 'TIENDA';
   label: string;
   /** Dónde conseguir las credenciales (se muestra en Conexión) */
   howTo: string;

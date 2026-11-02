@@ -38,6 +38,7 @@ const ACTIONS: Record<string, (p: P) => string> = {
   'PUT /api/retail-api/:provider/sku-names': (p) => `Asoció un SKU padre/color en ${r(p.provider)}`,
   'DELETE /api/retail-api/:provider/sku-names/:sku': (p) => `Quitó un SKU padre/color en ${r(p.provider)}`,
   'POST /api/retail-api/labels': () => 'Sacó etiquetas de despacho',
+  'POST /api/retail-api/tienda/publish': () => 'Publicó productos en la tienda web',
   'POST /api/retail-api/enviame/labels': () => 'Sacó etiquetas de Paris (Envíame)',
   'POST /api/retail-api/enviame/pickups': () => 'Agendó un retiro en Envíame',
 

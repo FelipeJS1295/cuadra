@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { arr, dayOf, dayRange, http, num, pick, str, toDate } from './util.js';
+import { falabellaSettlements } from './falabella-finance.js';
 import {
   ProviderError,
   type LabelOrder,
@@ -243,6 +244,8 @@ export const falabella: RetailProvider = {
   docsUrl: 'https://developers.falabella.com/v600/reference',
   uploadInvoice,
   labels,
+  // Liquidación por API: GetTransactionDetails (movimientos) + GetPayoutStatus (si cada estado de cuenta ya se pagó)
+  settlements: (cfg, from, to, progress) => falabellaSettlements(call, cfg, from, to, progress),
 
   fields: [
     { key: 'userId', label: 'User ID (correo de Seller Center)', required: true, placeholder: 'ventas@jamaroff.cl' },

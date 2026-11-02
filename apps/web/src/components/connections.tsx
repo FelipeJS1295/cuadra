@@ -71,7 +71,12 @@ export function ConnectionsPanel() {
                   <p className="text-lg font-semibold">{r.name}</p>
                   <p className="text-sm text-muted">
                     Comisión {r.commissionPct ? `${r.commissionPct}%` : <span className="text-sun-700">sin definir</span>} ·{' '}
-                    {paymentTermsLabel({ rule: r.paymentRule, days: r.paymentDays, weekday: r.paymentWeekday, base: r.paymentBase === 'DESPACHO' ? 'DESPACHO' : 'ORDEN' })}
+                    {paymentTermsLabel({
+                      rule: r.paymentRule,
+                      days: r.paymentDays,
+                      weekday: r.paymentWeekday,
+                      base: r.paymentBase === 'DESPACHO' ? 'DESPACHO' : 'ORDEN',
+                    })}
                   </p>
                 </div>
                 <button onClick={() => setEdit(r)} className="rounded-xl p-2 text-muted hover:bg-stone-100" title="Editar condiciones">
@@ -100,6 +105,40 @@ export function ConnectionsPanel() {
           );
         })}
       </div>
+      {/* Conexiones disponibles que aún no son un canal de la empresa (ej. su tienda web propia) */}
+      {(() => {
+        const extra = (conns.data ?? []).filter((c) => !(retailers.data ?? []).some((r) => r.code === c.provider));
+        if (!extra.length) return null;
+        return (
+          <>
+            <h2 className="mt-8 mb-3 text-base font-semibold">Otras conexiones</h2>
+            <div className="grid gap-4 md:grid-cols-2">
+              {extra.map((c) => (
+                <Card key={c.provider} className="p-5">
+                  <p className="text-lg font-semibold">{c.label}</p>
+                  <p className="mt-1 text-sm text-muted">
+                    {c.provider === 'TIENDA'
+                      ? 'Tu tienda web propia: sus ventas llegan a Ventas y publicas tus productos desde Productos → Tienda web.'
+                      : 'Trae tus ventas por API.'}
+                  </p>
+                  <div className="mt-4 flex items-center gap-2">
+                    {c.status === 'OK' ? (
+                      <Pill tone="verde">
+                        <PlugZap className="size-3.5" /> Conectado por API
+                      </Pill>
+                    ) : (
+                      <Pill>Sin conectar</Pill>
+                    )}
+                    <Button size="sm" variant="secondary" className="ml-auto" onClick={() => setConnect(c)}>
+                      {c.status === 'OK' ? 'Ver conexión' : 'Conectar'}
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </>
+        );
+      })()}
       {edit && <RetailerTerms r={edit} onClose={() => setEdit(null)} />}
       {connect && <ApiConnect c={connect} onClose={() => setConnect(null)} />}
     </div>
@@ -189,7 +228,12 @@ function RetailerTerms({ r, onClose }: { r: RetailerMaster; onClose: () => void 
         )}
         {f.paymentRule === 'DIAS' && (
           <Field label="Los días se cuentan desde">
-            <select value={f.paymentBase} onChange={(e) => setF({ ...f, paymentBase: e.target.value as 'ORDEN' | 'DESPACHO' })} disabled={!isAdmin} className={inputCls}>
+            <select
+              value={f.paymentBase}
+              onChange={(e) => setF({ ...f, paymentBase: e.target.value as 'ORDEN' | 'DESPACHO' })}
+              disabled={!isAdmin}
+              className={inputCls}
+            >
               <option value="ORDEN">La fecha de la venta</option>
               <option value="DESPACHO">La fecha de despacho</option>
             </select>
@@ -200,7 +244,13 @@ function RetailerTerms({ r, onClose }: { r: RetailerMaster; onClose: () => void 
         </Field>
       </div>
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} disabled={!isAdmin} className="size-4 accent-brand-600" />
+        <input
+          type="checkbox"
+          checked={f.isActive}
+          onChange={(e) => setF({ ...f, isActive: e.target.checked })}
+          disabled={!isAdmin}
+          className="size-4 accent-brand-600"
+        />
         Vendo en este retailer
       </label>
       <ErrorBox error={save.error} />
@@ -257,7 +307,11 @@ function SyncNow({ c }: { c: RetailApiConnection }) {
           Ver ventas
         </Link>
         {canEdit && (
-          <button onClick={() => start.mutate()} disabled={running} className="inline-flex items-center gap-1 font-medium text-ink hover:underline disabled:opacity-50">
+          <button
+            onClick={() => start.mutate()}
+            disabled={running}
+            className="inline-flex items-center gap-1 font-medium text-ink hover:underline disabled:opacity-50"
+          >
             <RefreshCw className={cn('size-3.5', running && 'animate-spin')} /> Traer ahora
           </button>
         )}
@@ -298,17 +352,30 @@ function ApiConnect({ c, onClose }: { c: RetailApiConnection; onClose: () => voi
       for (const k of SALES_KEYS) qc.invalidateQueries({ queryKey: [k] });
     },
   });
-  // Campos avanzados (URL, rutas) escondidos para no confundir
-  const basic = c.fields.filter((f) => !/url|path/i.test(f.key));
+  // Campos avanzados (URL, rutas) escondidos para no confundir; los obligatorios se muestran siempre
+  const basic = c.fields.filter((f) => f.required || !/url|path/i.test(f.key));
   return (
     <Modal wide title={`Conectar ${c.label} por API`} intro={c.howTo} onClose={onClose}>
       <div className="grid gap-4 sm:grid-cols-2">
         {basic.map((f) => (
           <Field key={f.key} label={f.label} hint={f.secret && c.secrets[f.key] ? `Guardada (${c.secrets[f.key]})` : f.help}>
             {f.secret ? (
-              <input type="password" autoComplete="new-password" value={secrets[f.key] ?? ''} onChange={(e) => setSecrets((x) => ({ ...x, [f.key]: e.target.value }))} disabled={!isAdmin} className={inputCls} />
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={secrets[f.key] ?? ''}
+                onChange={(e) => setSecrets((x) => ({ ...x, [f.key]: e.target.value }))}
+                disabled={!isAdmin}
+                className={inputCls}
+              />
             ) : (
-              <input value={settings[f.key] ?? ''} onChange={(e) => setSettings((x) => ({ ...x, [f.key]: e.target.value }))} placeholder={f.placeholder} disabled={!isAdmin} className={inputCls} />
+              <input
+                value={settings[f.key] ?? ''}
+                onChange={(e) => setSettings((x) => ({ ...x, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+                disabled={!isAdmin}
+                className={inputCls}
+              />
             )}
           </Field>
         ))}
@@ -356,7 +423,8 @@ function ApiConnect({ c, onClose }: { c: RetailApiConnection; onClose: () => voi
       {disconnect.data && (
         <p className="rounded-xl bg-money-50 p-3 text-sm text-money-700">
           {c.label} quedó por archivo. Se quitaron {disconnect.data.removed} {disconnect.data.removed === 1 ? 'línea' : 'líneas'} de venta que llegaron por API
-          {disconnect.data.kept ? ` (se dejaron ${disconnect.data.kept} órdenes que ya tienen boleta o factura)` : ''}. Ahora sube el reporte de ventas en Ventas → Subir ventas.
+          {disconnect.data.kept ? ` (se dejaron ${disconnect.data.kept} órdenes que ya tienen boleta o factura)` : ''}. Ahora sube el reporte de ventas en
+          Ventas → Subir ventas.
         </p>
       )}
       <ErrorBox error={disconnect.error} />

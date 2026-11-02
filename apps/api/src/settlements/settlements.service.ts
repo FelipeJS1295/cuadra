@@ -12,12 +12,10 @@ import { walmartSettlementAdapter } from './adapters/walmart.settlement.js';
 import type { SettlementAdapter } from './adapters/types.js';
 
 /** Código de la opción: "CENCOSUD" o, si tiene modalidad, "CENCOSUD_FULFILLMENT" */
-export const adapterCode = (a: SettlementAdapter) =>
-  a.channel ? `${a.retailerCode}_${a.channel}` : a.retailerCode;
+export const adapterCode = (a: SettlementAdapter) => (a.channel ? `${a.retailerCode}_${a.channel}` : a.retailerCode);
 
 /** Nombre visible: "Cencosud" o "Cencosud Fulfillment" */
-export const adapterName = (a: SettlementAdapter) =>
-  a.channel ? `${a.retailerName} Fulfillment` : a.retailerName;
+export const adapterName = (a: SettlementAdapter) => (a.channel ? `${a.retailerName} Fulfillment` : a.retailerName);
 
 /** Adaptadores de liquidación disponibles. Un retailer nuevo se agrega aquí. */
 const ADAPTER_LIST: SettlementAdapter[] = [
@@ -27,9 +25,7 @@ const ADAPTER_LIST: SettlementAdapter[] = [
   hitesSettlementAdapter,
   walmartSettlementAdapter,
 ];
-const ADAPTERS: Record<string, SettlementAdapter> = Object.fromEntries(
-  ADAPTER_LIST.map((a) => [adapterCode(a), a]),
-);
+const ADAPTERS: Record<string, SettlementAdapter> = Object.fromEntries(ADAPTER_LIST.map((a) => [adapterCode(a), a]));
 
 const CHUNK_SIZE = 500;
 
@@ -56,6 +52,8 @@ export class SettlementsService {
       // Liquidación que llega sola por API (no se sube archivo)
       { code: 'RIPLEY', name: 'Ripley', upload: false },
       { code: 'MERCADOLIBRE', name: 'Mercado Libre', upload: false },
+      // Tienda web propia: el pago es el del cliente al comprar (Webpay o transferencia)
+      { code: 'TIENDA', name: 'Tienda web', upload: false },
     ];
   }
 
@@ -65,22 +63,13 @@ export class SettlementsService {
    * (estado, estado de cuenta, referencia), porque el retailer los va completando
    * hasta el cierre del período. Nunca se duplica un movimiento.
    */
-  async importFile(
-    retailerCode: string,
-    fileName: string,
-    buffer: Buffer,
-  ): Promise<SettlementImportResult> {
+  async importFile(retailerCode: string, fileName: string, buffer: Buffer): Promise<SettlementImportResult> {
     const adapter = ADAPTERS[retailerCode.toUpperCase()];
     if (!adapter) {
       throw new BadRequestException(`No hay adaptador de liquidación para "${retailerCode}"`);
     }
 
-    const { rows } = await readExcelTable(
-      buffer,
-      adapter.requiredHeaders,
-      adapterName(adapter),
-      fileName,
-    );
+    const { rows } = await readExcelTable(buffer, adapter.requiredHeaders, adapterName(adapter), fileName);
     const retailerId = await this.getOrCreateRetailer(adapter);
 
     const errors: SettlementImportResult['errors'] = [];
@@ -131,9 +120,7 @@ export class SettlementsService {
       }
     });
 
-    this.logger.log(
-      `Liquidación ${adapterName(adapter)} "${fileName}": ${inserted} nuevos, ${updated} actualizados, ${errors.length} con error`,
-    );
+    this.logger.log(`Liquidación ${adapterName(adapter)} "${fileName}": ${inserted} nuevos, ${updated} actualizados, ${errors.length} con error`);
 
     return {
       retailer: adapterName(adapter),
@@ -150,10 +137,7 @@ export class SettlementsService {
       .insert(retailers)
       .values({ code: adapter.retailerCode, name: adapter.retailerName })
       .onConflictDoNothing({ target: [retailers.tenantId, retailers.code] });
-    const [retailer] = await this.db
-      .select({ id: retailers.id })
-      .from(retailers)
-      .where(eq(retailers.code, adapter.retailerCode));
+    const [retailer] = await this.db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, adapter.retailerCode));
     return retailer.id;
   }
 }

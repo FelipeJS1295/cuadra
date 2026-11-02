@@ -811,6 +811,58 @@ const qs = (o: Record<string, string | number | undefined | null>) => {
   return p.length ? `?${p.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&')}` : '';
 };
 
+export interface StoreProduct {
+  key: string;
+  parentSku: string | null;
+  name: string;
+  description: string;
+  images: string[];
+  imagesFrom: string | null;
+  sources: {
+    provider: string;
+    label: string;
+    sellerSku: string;
+    name: string | null;
+    price: number | null;
+    salePrice: number | null;
+    stock: number | null;
+    url: string | null;
+  }[];
+  suggestedPrice: number | null;
+  suggestedCompareAt: number | null;
+  stock: number | null;
+  store: {
+    id: number;
+    price: number;
+    compareAtPrice: number | null;
+    stock: number;
+    active: boolean;
+    url: string;
+    image: string | null;
+    category: string | null;
+    images: number;
+  } | null;
+}
+export interface StoreCatalog {
+  categories: string[];
+  products: StoreProduct[];
+}
+export interface StorePublishItem {
+  key: string;
+  name: string;
+  price: number;
+  compareAtPrice: number | null;
+  category: string | null;
+  stock: number | null;
+  active: boolean;
+  images: boolean;
+}
+export interface StorePublishResult {
+  ok: number;
+  failed: number;
+  results: { key: string; ok: boolean; created?: boolean; url?: string; images?: number; warnings?: string[]; error?: string }[];
+}
+
 // ===================== Maestra de retailers =====================
 
 export type PaymentBase = 'ORDEN' | 'DESPACHO';
@@ -1209,7 +1261,7 @@ export type GuideInput = Omit<DispatchGuide, 'id' | 'transferLabel' | 'totalGros
 
 // ---------------------------------------------------------------- API Retail
 
-export type RetailProviderCode = 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE';
+export type RetailProviderCode = 'FALABELLA' | 'CENCOSUD' | 'WALMART' | 'RIPLEY' | 'MERCADOLIBRE' | 'TIENDA';
 
 export interface RetailApiConnection {
   provider: RetailProviderCode;
@@ -1520,6 +1572,9 @@ export const api = {
 
   // API Retail
   retailConnections: () => request<RetailApiConnection[]>('/retail-api/connections'),
+  // Tienda web propia: publicar productos de Cuadra
+  storeCatalog: () => request<StoreCatalog>('/retail-api/tienda/catalog'),
+  storePublish: (items: StorePublishItem[]) => request<StorePublishResult>('/retail-api/tienda/publish', { method: 'POST', body: JSON.stringify({ items }) }),
   saveRetailConnection: (provider: RetailProviderCode, data: { enabled: boolean; settings: Record<string, string>; secrets: Record<string, string> }) =>
     request<{ ok: boolean }>(`/retail-api/connections/${provider}`, { method: 'PUT', body: JSON.stringify(data) }),
   testRetailConnection: (provider: RetailProviderCode) =>

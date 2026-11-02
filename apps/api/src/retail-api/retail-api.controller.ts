@@ -54,6 +54,40 @@ function defaultRange() {
 export class RetailApiController {
   constructor(private readonly service: RetailApiService) {}
 
+  // ---------- Tienda web propia: publicar productos de Cuadra
+  //   GET  /api/retail-api/tienda/catalog     productos de Cuadra y su estado en la tienda
+  //   POST /api/retail-api/tienda/publish     { items: [{ key, name, price, compareAtPrice, category, stock, active, images }] }
+
+  @Get('tienda/catalog')
+  storeCatalog() {
+    return this.service.storeCatalog();
+  }
+
+  @Post('tienda/publish')
+  storePublish(@Body() body: unknown) {
+    const { items } = validate(
+      z.object({
+        items: z
+          .array(
+            z.object({
+              key: z.string().trim().min(1).max(120),
+              name: z.string().trim().min(2, 'Falta el nombre').max(200),
+              price: z.number().int().positive('Falta el precio'),
+              compareAtPrice: z.number().int().positive().nullable().default(null),
+              category: z.string().trim().max(80).nullable().default(null),
+              stock: z.number().int().min(0).nullable().default(null),
+              active: z.boolean().default(true),
+              images: z.boolean().default(true),
+            }),
+          )
+          .min(1)
+          .max(200),
+      }),
+      body,
+    );
+    return this.service.storePublish(items);
+  }
+
   // ---------- Etiquetas de despacho desde la API de cada retailer
   //   GET  /api/retail-api/labels/providers          retailers que las entregan
   //   POST /api/retail-api/labels { orders, pack }   un PDF con todas (problemas en X-Labels-Problems)

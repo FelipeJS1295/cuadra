@@ -3,11 +3,7 @@ import { CANCELLED_PATTERN, orderStateOf, orderStateOfLines, PRICING_CHANNELS, t
 import { and, eq, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
 import { customerReceipts, retailers } from '../database/schema/index.js';
-import {
-  NOT_FULFILLMENT_SQL,
-  ReconciliationService,
-  showsCustomerOrderId,
-} from '../settlements/reconciliation.service.js';
+import { NOT_FULFILLMENT_SQL, ReconciliationService, showsCustomerOrderId } from '../settlements/reconciliation.service.js';
 import { SettingsService } from '../company/settings.service.js';
 import { SettlementsService } from '../settlements/settlements.service.js';
 
@@ -41,6 +37,8 @@ export function courierOf(code: string, carrier: string | null) {
   const c = (carrier ?? '').trim();
   // Ventas recibidas de un cliente de Cuadra: el courier lo informa el cliente
   if (code.startsWith('CLI-') && c) return c;
+  // Tienda web propia: el transporte que se anotó en el pedido (o retiro en tienda)
+  if (code === 'TIENDA') return c || 'Por definir';
   if (code === 'CENCOSUD' && c) {
     if (/blue/i.test(c)) return 'Bluexpress';
     return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
@@ -254,9 +252,7 @@ export class SalesService {
     // Fabricante: el costo sale de la receta de insumos, no de facturas de proveedor
     const fab = (await this.settings.businessMode()) === 'FABRICANTE';
     // Rango de fechas de la orden (AAAA-MM-DD, ambos incluidos)
-    const having = range
-      ? sql`having min(s.order_date)::date between ${range.from}::date and ${range.to}::date`
-      : sql``;
+    const having = range ? sql`having min(s.order_date)::date between ${range.from}::date and ${range.to}::date` : sql``;
     const [{ rows: groups }, money] = await Promise.all([
       this.db.execute<SaleGroup>(sql`
         select
@@ -353,23 +349,14 @@ export class SalesService {
       const vatShipping = shippingCharges !== null ? vatOf(-shippingCharges) : 0;
       let vat = vatSale !== null ? vatSale - vatPurchase - vatCommission - vatShipping : null;
 
-      let total =
-        !g.cancelled && settlementNet !== null && supplierGross !== null && vat !== null
-          ? settlementNet - supplierGross - vat
-          : null;
+      let total = !g.cancelled && settlementNet !== null && supplierGross !== null && vat !== null ? settlementNet - supplierGross - vat : null;
 
       // Costo: el de la factura del proveedor; si no hay, el del producto (Productos guarda el neto)
       const estCost = !g.cost_missing && g.est_cost ? g.est_cost : null;
       const cost = supplierNet !== null ? supplierNet : estCost;
       const costGross = supplierGross !== null ? supplierGross : estCost !== null ? estCost * VAT_RATE : null;
       const costSource =
-        supplierNet !== null
-          ? ('FACTURA' as const)
-          : estCost !== null
-            ? fab && g.all_recipe
-              ? ('RECETA' as const)
-              : ('ESTIMADO' as const)
-            : null;
+        supplierNet !== null ? ('FACTURA' as const) : estCost !== null ? (fab && g.all_recipe ? ('RECETA' as const) : ('ESTIMADO' as const)) : null;
 
       // Venta + envío que pagó el cliente
       const shippingPrice = g.cancelled ? 0 : (g.shipping_price ?? 0);
@@ -383,7 +370,8 @@ export class SalesService {
       else if (settlementNet !== null && saleTotal !== null) settlementCharges = saleTotal - settlementNet;
       else if (saleTotal !== null && salePrice !== null) {
         const commissionEst = (salePrice * (g.commission_pct ?? 0)) / 100;
-        settlementCharges = commissionEst + shippingPrice;
+        // En la tienda propia el despacho lo cobra la empresa (no se lo queda un retailer)
+        settlementCharges = commissionEst + (g.retailer_code === 'TIENDA' ? 0 : shippingPrice);
         vatCharges = vatOf(commissionEst);
         settlementEstimated = true;
       }
@@ -393,12 +381,11 @@ export class SalesService {
       const vatToPay = g.cancelled ? 0 : vatSale !== null ? vatSale - vatCost - vatCharges : null;
 
       // Utilidad = venta − costo − IVA − liquidación
-      const utility =
-        g.cancelled
-          ? 0
-          : saleTotal !== null && costGross !== null && vatToPay !== null && settlementCharges !== null
-            ? saleTotal - costGross - vatToPay - settlementCharges
-            : null;
+      const utility = g.cancelled
+        ? 0
+        : saleTotal !== null && costGross !== null && vatToPay !== null && settlementCharges !== null
+          ? saleTotal - costGross - vatToPay - settlementCharges
+          : null;
       // Revendedor: es estimada mientras falte la factura del proveedor. Fabricante: el costo es el de
       // los insumos, solo falta que el retailer pague
       const utilityEstimated = utility !== null && !g.cancelled && (settlementEstimated || (!fab && costSource !== 'FACTURA'));
@@ -557,8 +544,7 @@ export class SalesService {
     if (rows.length === 0) throw new NotFoundException('No se encontró la orden');
 
     // Datos del cliente: el primer valor no vacío de las líneas de la orden
-    const first = <K extends keyof (typeof rows)[number]>(k: K) =>
-      rows.map((r) => r[k]).find((v) => v !== null && v !== '') ?? null;
+    const first = <K extends keyof (typeof rows)[number]>(k: K) => rows.map((r) => r[k]).find((v) => v !== null && v !== '') ?? null;
 
     const billingTaxId = first('billing_tax_id') as string | null;
     const docType = String(first('document_type') ?? '').toUpperCase();
@@ -608,14 +594,8 @@ export class SalesService {
   /**
    * Boleta al cliente final: una por orden. Si ya existe, se reemplaza.
    */
-  async saveReceipt(
-    input: { retailerCode: string; orderNumber: string; receiptNumber: string; totalGross: string },
-    userId: string | null,
-  ) {
-    const [retailer] = await this.db
-      .select({ id: retailers.id })
-      .from(retailers)
-      .where(eq(retailers.code, input.retailerCode.toUpperCase()));
+  async saveReceipt(input: { retailerCode: string; orderNumber: string; receiptNumber: string; totalGross: string }, userId: string | null) {
+    const [retailer] = await this.db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, input.retailerCode.toUpperCase()));
     if (!retailer) throw new BadRequestException(`Retailer "${input.retailerCode}" no existe`);
 
     // Una boleta emitida desde el sistema no se cambia a mano
@@ -651,14 +631,9 @@ export class SalesService {
       .from(customerReceipts)
       .where(eq(customerReceipts.id, id));
     if (current?.status === 'EMITIDA' || current?.status === 'EMITIENDO') {
-      throw new BadRequestException(
-        `La boleta N° ${current.number} está emitida en el SII: para dejarla sin efecto hay que anularla con una nota de crédito`,
-      );
+      throw new BadRequestException(`La boleta N° ${current.number} está emitida en el SII: para dejarla sin efecto hay que anularla con una nota de crédito`);
     }
-    const [row] = await this.db
-      .delete(customerReceipts)
-      .where(eq(customerReceipts.id, id))
-      .returning({ id: customerReceipts.id });
+    const [row] = await this.db.delete(customerReceipts).where(eq(customerReceipts.id, id)).returning({ id: customerReceipts.id });
     if (!row) throw new NotFoundException('La boleta ya no existe');
     return { deleted: true };
   }
@@ -736,15 +711,14 @@ export class SalesService {
       date: r.transaction_date,
       amount: Math.round(r.amount_gross),
       // % de la comisión sobre el producto (el que informa el retailer o el calculado)
-      pct:
-        r.kind === 'COMMISSION'
-          ? (r.commission_pct ?? (product ? Math.round((Math.abs(r.amount_gross) / product) * 1000) / 10 : null))
-          : null,
+      pct: r.kind === 'COMMISSION' ? (r.commission_pct ?? (product ? Math.round((Math.abs(r.amount_gross) / product) * 1000) / 10 : null)) : null,
       statement: r.statement_number,
       status: r.payment_status,
     }));
     const ORDER_OF = (l: { label: string }) =>
-      ['Producto', 'Devolución del producto', 'Envío pagado por el cliente', 'Comisión', 'Devolución de comisión', 'Despacho', 'Logística', 'Multa'].indexOf(l.label) >>> 0;
+      ['Producto', 'Devolución del producto', 'Envío pagado por el cliente', 'Comisión', 'Devolución de comisión', 'Despacho', 'Logística', 'Multa'].indexOf(
+        l.label,
+      ) >>> 0;
     // Mismo concepto repetido (ej: dos cobros de despacho) se muestra sumado
     const merged = new Map<string, (typeof lines)[number]>();
     for (const l of lines) {
@@ -766,9 +740,7 @@ export class SalesService {
   private async moneyByOrder(): Promise<Map<string, Money>> {
     const map = new Map<string, Money>();
     const options = this.settlements.availableRetailers();
-    const results = await Promise.all(
-      options.map((o) => this.reconciliation.reconcile(o.code).catch(() => null)),
-    );
+    const results = await Promise.all(options.map((o) => this.reconciliation.reconcile(o.code).catch(() => null)));
     for (const data of results) {
       if (!data) continue;
       for (const r of data.rows) {

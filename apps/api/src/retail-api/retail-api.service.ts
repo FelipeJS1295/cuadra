@@ -29,6 +29,8 @@ import {
 import { decryptSecrets, encryptSecrets, mask } from '../common/secrets.js';
 import { orderToSales, retailerIdFor } from './api-to-sales.js';
 import * as enviame from './providers/enviame.js';
+import { storeCall } from './providers/tienda.js';
+import { extractImages, htmlToText, SOURCE_ORDER } from './store-catalog.js';
 import { PDFDocument } from 'pdf-lib';
 
 export interface SyncJob {
@@ -134,6 +136,224 @@ export class RetailApiService {
     return { label: p.label, ...(await p.uploadInvoice!(await this.config(p), { ...input, externalOrderId: input.externalOrderId ?? o?.externalId ?? null })) };
   }
 
+  // ------------------------------------------------------------------ Tienda web: publicar productos
+
+  private async storeConfig() {
+    const p = this.provider('TIENDA');
+    const r = await this.row('TIENDA');
+    if (!r?.secrets) throw new BadRequestException('Conecta primero la tienda web: Configuración → Conexiones → Tienda web');
+    return this.config(p);
+  }
+
+  /** Productos de los retailers agrupados por SKU padre/color, listos para publicar */
+  private async storeGroups() {
+    const { rows } = await this.db.execute<{
+      provider: string;
+      seller_sku: string;
+      name: string | null;
+      description: string | null;
+      price: string | null;
+      sale_price: string | null;
+      stock: number | null;
+      url: string | null;
+      image_url: string | null;
+      raw: unknown;
+      parent_sku: string | null;
+      own_name: string | null;
+    }>(sql`
+      select p.provider, p.seller_sku, p.name, p.description, p.price, p.sale_price, p.stock, p.url, p.image_url, p.raw,
+        sn.parent_sku, sn.name as own_name
+      from retail_api_products p
+      left join retail_sku_names sn on sn.provider = p.provider and sn.seller_sku = upper(p.seller_sku)
+      where p.provider <> 'TIENDA'
+    `);
+    const label = (code: string) => providerByCode(code)?.label ?? code;
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        parentSku: string | null;
+        names: string[];
+        ownName: string | null;
+        sources: {
+          provider: string;
+          label: string;
+          sellerSku: string;
+          name: string | null;
+          price: number | null;
+          salePrice: number | null;
+          stock: number | null;
+          url: string | null;
+        }[];
+        images: { provider: string; urls: string[] }[];
+        descriptions: { provider: string; text: string }[];
+      }
+    >();
+    // Un SKU asociado a un SKU padre/color en un retailer se agrupa igual en los demás
+    const parentOf = new Map<string, string>();
+    for (const r of rows) if (r.parent_sku) parentOf.set(r.seller_sku.trim().toUpperCase(), r.parent_sku);
+    for (const r of rows) {
+      const parent = r.parent_sku ?? parentOf.get(r.seller_sku.trim().toUpperCase()) ?? null;
+      const key = (parent ?? r.seller_sku).trim().toUpperCase();
+      const g = groups.get(key) ?? { key, parentSku: parent, names: [], ownName: null, sources: [], images: [], descriptions: [] };
+      groups.set(key, g);
+      if (r.own_name) g.ownName ??= r.own_name;
+      if (r.name) g.names.push(r.name);
+      const price = r.price !== null ? Number(r.price) : null;
+      const sale = r.sale_price !== null ? Number(r.sale_price) : null;
+      g.sources.push({
+        provider: r.provider,
+        label: label(r.provider),
+        sellerSku: r.seller_sku,
+        name: r.name,
+        price,
+        salePrice: sale,
+        stock: r.stock,
+        url: r.url,
+      });
+      const imgs = extractImages(r.raw, r.image_url);
+      if (imgs.length) g.images.push({ provider: r.provider, urls: imgs });
+      const text = htmlToText(r.description);
+      if (text) g.descriptions.push({ provider: r.provider, text });
+    }
+    const rank = (p: string) => SOURCE_ORDER.indexOf(p) + 1 || 99;
+    return [...groups.values()].map((g) => {
+      // Fotos: las del retailer con más fotos (a igualdad, el de mejor ficha); textos: el más completo
+      const best = [...g.images].sort((a, b) => b.urls.length - a.urls.length || rank(a.provider) - rank(b.provider))[0];
+      const desc = [...g.descriptions].sort((a, b) => b.text.length - a.text.length)[0];
+      const prices = g.sources.map((s) => s.salePrice ?? s.price).filter((x): x is number => x !== null && x > 0);
+      const normal = g.sources.map((s) => s.price).filter((x): x is number => x !== null && x > 0);
+      const stocks = g.sources.map((s) => s.stock).filter((x): x is number => x !== null);
+      return {
+        key: g.key,
+        parentSku: g.parentSku,
+        name: g.ownName ?? [...g.names].sort((a, b) => a.length - b.length)[0] ?? g.key,
+        description: desc?.text ?? '',
+        images: (best?.urls ?? []).slice(0, 10),
+        imagesFrom: best ? label(best.provider) : null,
+        sources: g.sources.sort((a, b) => rank(a.provider) - rank(b.provider)),
+        // Precio sugerido: el más bajo que tiene en los retailers (la web no debería ser más cara)
+        suggestedPrice: prices.length ? Math.round(Math.min(...prices)) : null,
+        suggestedCompareAt: normal.length ? Math.round(Math.max(...normal)) : null,
+        stock: stocks.length ? Math.max(...stocks) : null,
+      };
+    });
+  }
+
+  /** Catálogo para la pestaña "Tienda web": productos de Cuadra y cómo están en la tienda */
+  async storeCatalog() {
+    const cfg = await this.storeConfig();
+    const [groups, store, cats] = await Promise.all([
+      this.storeGroups(),
+      this.wrap(() => storeCall(cfg, '/api/cuadra/productos')),
+      this.wrap(() => storeCall(cfg, '/api/cuadra/categorias')).catch(() => ({ categories: [] })),
+    ]);
+    const published = new Map(
+      ((store.products ?? []) as { sku: string | null; [k: string]: unknown }[]).filter((p) => p.sku).map((p) => [String(p.sku).toUpperCase(), p]),
+    );
+    return {
+      categories: ((cats as { categories?: { name: string }[] }).categories ?? []).map((c) => c.name),
+      products: groups
+        .map((g) => {
+          const p = published.get(g.key) as
+            | {
+                id: number;
+                price: number;
+                compareAtPrice: number | null;
+                stock: number;
+                active: boolean;
+                url: string;
+                image: string | null;
+                category: string | null;
+                images: number;
+              }
+            | undefined;
+          return {
+            ...g,
+            store: p
+              ? {
+                  id: p.id,
+                  price: p.price,
+                  compareAtPrice: p.compareAtPrice,
+                  stock: p.stock,
+                  active: p.active,
+                  url: p.url,
+                  image: p.image,
+                  category: p.category,
+                  images: p.images,
+                }
+              : null,
+          };
+        })
+        .sort((a, b) => Number(Boolean(b.store)) - Number(Boolean(a.store)) || a.name.localeCompare(b.name)),
+    };
+  }
+
+  /** Publica o actualiza productos en la tienda (de a 5 por pedido: las fotos se descargan allá) */
+  async storePublish(
+    items: {
+      key: string;
+      name: string;
+      price: number;
+      compareAtPrice: number | null;
+      category: string | null;
+      stock: number | null;
+      active: boolean;
+      images: boolean;
+    }[],
+  ) {
+    const cfg = await this.storeConfig();
+    const groups = new Map((await this.storeGroups()).map((g) => [g.key, g]));
+    const results: { key: string; ok: boolean; created?: boolean; url?: string; images?: number; warnings?: string[]; error?: string }[] = [];
+    // Solo productos que existen en Cuadra
+    for (const i of items.filter((x) => !groups.has(x.key.toUpperCase()))) results.push({ key: i.key, ok: false, error: 'No está en los productos de Cuadra' });
+    const payload = items
+      .filter((x) => groups.has(x.key.toUpperCase()))
+      .map((i) => {
+        const g = groups.get(i.key.toUpperCase());
+        return {
+          key: i.key,
+          body: {
+            sku: i.key,
+            name: i.name,
+            price: Math.round(i.price),
+            compareAtPrice: i.compareAtPrice && i.compareAtPrice > i.price ? Math.round(i.compareAtPrice) : null,
+            ...(g?.description ? { description: g.description } : {}),
+            ...(i.category ? { category: i.category } : {}),
+            ...(i.stock !== null ? { stock: Math.max(0, Math.round(i.stock)), mode: 'stock' as const } : {}),
+            ...(i.images && g?.images.length ? { images: g.images } : {}),
+            active: i.active,
+          },
+        };
+      });
+    for (let n = 0; n < payload.length; n += 5) {
+      const chunk = payload.slice(n, n + 5);
+      try {
+        const res = await storeCall(cfg, '/api/cuadra/productos', { method: 'POST', body: { products: chunk.map((c) => c.body) }, timeoutMs: 300000 });
+        const list = (res.results ?? []) as {
+          ok: boolean;
+          sku: string;
+          created?: boolean;
+          url?: string;
+          images?: number;
+          warnings?: string[];
+          error?: string;
+        }[];
+        for (const c of chunk) {
+          const r = list.find((x) => x.sku.toUpperCase() === c.key.toUpperCase());
+          results.push(
+            r
+              ? { key: c.key, ok: r.ok, created: r.created, url: r.url, images: r.images, warnings: r.warnings, error: r.error }
+              : { key: c.key, ok: false, error: 'La tienda no respondió por este producto' },
+          );
+        }
+      } catch (err) {
+        for (const c of chunk) results.push({ key: c.key, ok: false, error: (err as Error).message });
+      }
+    }
+    return { results, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
+  }
+
   // ------------------------------------------------------------------ Etiquetas de despacho
 
   /** Retailers conectados que entregan etiquetas por API */
@@ -170,7 +390,14 @@ export class RetailApiService {
         .from(retailApiOrders)
         .where(
           sql`${retailApiOrders.provider} = ${p.code} and (${retailApiOrders.orderNumber} in ${nums} or ${retailApiOrders.customerOrderId} in ${nums}
-            ${p.code === 'CENCOSUD' ? sql`or ${sql.join(nums.map((n) => sql`${retailApiOrders.raw}::text like ${`%"${n.replace(/[\\%_"]/g, '')}"%`}`), sql` or `)}` : sql``})`,
+            ${
+              p.code === 'CENCOSUD'
+                ? sql`or ${sql.join(
+                    nums.map((n) => sql`${retailApiOrders.raw}::text like ${`%"${n.replace(/[\\%_"]/g, '')}"%`}`),
+                    sql` or `,
+                  )}`
+                : sql``
+            })`,
         );
       // Paris: la orden trae varias sub-órdenes; se busca la que tiene ese número
       const inRaw = (raw: unknown, n: string) => JSON.stringify(raw ?? '').includes(`"${n}"`);

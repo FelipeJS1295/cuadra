@@ -7,21 +7,25 @@ import { ClientProducts } from '@/components/client-products';
 import { RetailProducts } from '@/components/retail-products';
 import { useSession } from '@/components/session';
 import { Button, Card, clp, Empty, ErrorBox, Field, inputCls, Loading, Modal, Page, parseAmount, Pill, Tabs, td, th, typingAmount } from '@/components/ui';
+import { StoreProducts } from '@/components/store-products';
 import { api, type Product, type Supply } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
 export default function ProductsPage() {
   const { canEdit, isFactory } = useSession();
-  const [tab, setTab] = useState<'productos' | 'insumos' | 'sin-asociar' | 'retailers' | 'clientes'>('productos');
+  const [tab, setTab] = useState<'productos' | 'insumos' | 'sin-asociar' | 'retailers' | 'clientes' | 'tienda'>('productos');
   // Productos que llegaron con ventas de clientes de Cuadra
   const clientProducts = useQuery({ queryKey: ['client-products'], queryFn: api.clientProducts });
   const clientPending = (clientProducts.data ?? []).filter((p) => p.price === null).length;
   // ?tab=clientes (el aviso de ventas recibidas lleva aquí)
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('tab');
-    if (t === 'clientes' || t === 'retailers' || t === 'sin-asociar') setTab(t);
+    if (t === 'clientes' || t === 'retailers' || t === 'sin-asociar' || t === 'tienda') setTab(t);
   }, []);
   const supplies = useQuery({ queryKey: ['supplies'], queryFn: api.listSupplies, enabled: isFactory });
+  // Tienda web propia conectada: pestaña para publicar productos
+  const connections = useQuery({ queryKey: ['retail-connections'], queryFn: api.retailConnections });
+  const hasStore = (connections.data ?? []).some((c) => c.provider === 'TIENDA' && c.configured);
   const [creating, setCreating] = useState(false);
   const products = useQuery({ queryKey: ['products'], queryFn: api.listProducts });
   const retailers = useQuery({ queryKey: ['import-retailers', 'liquidacion'], queryFn: api.settlementRetailers });
@@ -34,7 +38,13 @@ export default function ProductsPage() {
         for (const mp of row.missingProducts) {
           if (mp.masterId) continue;
           const key = `${retailers.data![i].code}|${mp.sellerSku ?? mp.name}`;
-          const prev = m.get(key) ?? { retailerCode: q.data!.retailerCode, retailer: retailers.data![i].name, sellerSku: mp.sellerSku, name: mp.name ?? 'Producto', sales: 0 };
+          const prev = m.get(key) ?? {
+            retailerCode: q.data!.retailerCode,
+            retailer: retailers.data![i].name,
+            sellerSku: mp.sellerSku,
+            name: mp.name ?? 'Producto',
+            sales: 0,
+          };
           prev.sales++;
           m.set(key, prev);
         }
@@ -56,13 +66,13 @@ export default function ProductsPage() {
           <p>Un producto puede venderse con distintos nombres y SKU en cada retailer (por color o tamaño). Aquí los agrupas en uno solo con su costo.</p>
           {isFactory && (
             <p>
-              En <b>Insumos</b> cargas tus materiales (tela, espuma, patas…) con su costo. En cada producto armas su <b>receta</b>: cuánto lleva de cada
-              insumo. Si cambia el costo de un insumo, se actualiza el costo de todos los productos que lo usan.
+              En <b>Insumos</b> cargas tus materiales (tela, espuma, patas…) con su costo. En cada producto armas su <b>receta</b>: cuánto lleva de cada insumo.
+              Si cambia el costo de un insumo, se actualiza el costo de todos los productos que lo usan.
             </p>
           )}
           <p>
-            En <b>En los retailers</b> ves tus publicaciones en Paris, Falabella y Walmart (los conectados por API) y cambias stock, precios, ofertas,
-            nombre y descripción sin entrar a cada portal.
+            En <b>En los retailers</b> ves tus publicaciones en Paris, Falabella y Walmart (los conectados por API) y cambias stock, precios, ofertas, nombre y
+            descripción sin entrar a cada portal.
           </p>
           <p>
             En <b>Sin asociar</b> aparecen los productos que vendiste y que todavía no sabemos a cuál de tus productos corresponden.
@@ -86,8 +96,15 @@ export default function ProductsPage() {
             ...(isFactory ? [{ id: 'insumos' as const, label: 'Insumos', count: supplies.data?.length }] : []),
             { id: 'sin-asociar', label: 'Sin asociar', count: unlinked.length },
             { id: 'retailers', label: 'En los retailers' },
+            ...(hasStore || tab === 'tienda' ? [{ id: 'tienda' as const, label: 'Tienda web' }] : []),
             ...(clientProducts.data?.length || tab === 'clientes'
-              ? [{ id: 'clientes' as const, label: clientPending ? `De clientes · ${clientPending} sin precio` : 'De clientes', count: clientProducts.data?.length }]
+              ? [
+                  {
+                    id: 'clientes' as const,
+                    label: clientPending ? `De clientes · ${clientPending} sin precio` : 'De clientes',
+                    count: clientProducts.data?.length,
+                  },
+                ]
               : []),
           ]}
         />
@@ -99,6 +116,8 @@ export default function ProductsPage() {
         <SupplyList supplies={supplies.data} loading={supplies.isLoading} />
       ) : tab === 'retailers' ? (
         <RetailProducts />
+      ) : tab === 'tienda' ? (
+        <StoreProducts />
       ) : tab === 'clientes' ? (
         <ClientProducts products={products.data ?? []} />
       ) : (
@@ -176,21 +195,32 @@ function ProductRow({ p }: { p: Product }) {
           // Con receta: el costo lo calcula Cuadra con los insumos
           <div className="flex items-center justify-end gap-2">
             <span className="num font-medium">{clp(cost)}</span>
-            <button onClick={() => setRecipeOpen(true)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50">
+            <button
+              onClick={() => setRecipeOpen(true)}
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50"
+            >
               <ClipboardList className="size-3.5" /> Receta · {p.recipe.items} {p.recipe.items === 1 ? 'insumo' : 'insumos'}
             </button>
           </div>
         ) : canEdit ? (
           <div className="flex items-center justify-end gap-2">
             {!cost && <Pill tone="ambar">Sin costo</Pill>}
-            <input value={value} onChange={(e) => setValue(typingAmount(e.target.value))} placeholder="$ costo" className={cn(inputCls, 'num w-32 text-right')} />
+            <input
+              value={value}
+              onChange={(e) => setValue(typingAmount(e.target.value))}
+              placeholder="$ costo"
+              className={cn(inputCls, 'num w-32 text-right')}
+            />
             {changed && (
               <Button size="sm" onClick={() => save.mutate()} loading={save.isPending}>
                 <Check className="size-4" />
               </Button>
             )}
             {isFactory && (
-              <button onClick={() => setRecipeOpen(true)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50">
+              <button
+                onClick={() => setRecipeOpen(true)}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50"
+              >
                 <ClipboardList className="size-3.5" /> Armar receta
               </button>
             )}
@@ -223,7 +253,11 @@ function RecipeDialog({ product, onClose }: { product: Product; onClose: () => v
   const total = current.reduce((n, l) => n + qty(l.quantity) * Number(byId.get(l.supplyId)?.netCost ?? 0), 0);
   const set = (i: number, patch: Partial<{ supplyId: string; quantity: string }>) => setLines(current.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   const save = useMutation({
-    mutationFn: () => api.saveRecipe(product.id, current.filter((l) => l.supplyId && qty(l.quantity) > 0).map((l) => ({ supplyId: l.supplyId, quantity: qty(l.quantity) }))),
+    mutationFn: () =>
+      api.saveRecipe(
+        product.id,
+        current.filter((l) => l.supplyId && qty(l.quantity) > 0).map((l) => ({ supplyId: l.supplyId, quantity: qty(l.quantity) })),
+      ),
     onSuccess: () => {
       for (const k of ['products', 'recipe', 'supplies', 'sales', 'home', 'reconciliation']) qc.invalidateQueries({ queryKey: [k] });
       onClose();
@@ -251,7 +285,11 @@ function RecipeDialog({ product, onClose }: { product: Product; onClose: () => v
       {recipe.isLoading || supplies.isLoading ? (
         <Loading />
       ) : !supplies.data?.length ? (
-        <Empty icon={<Layers className="size-6" />} title="Aún no tienes insumos" text="Primero carga tus insumos en la pestaña Insumos (tela, espuma, patas…) con su costo." />
+        <Empty
+          icon={<Layers className="size-6" />}
+          title="Aún no tienes insumos"
+          text="Primero carga tus insumos en la pestaña Insumos (tela, espuma, patas…) con su costo."
+        />
       ) : (
         <div className="space-y-3 text-left">
           {current.length === 0 && <p className="text-sm text-muted">Este producto aún no tiene insumos. Agrega el primero.</p>}
@@ -271,13 +309,22 @@ function RecipeDialog({ product, onClose }: { product: Product; onClose: () => v
                 </Field>
                 <Field label={i === 0 ? 'Cantidad' : ''} className="w-36">
                   <div className="flex items-center gap-1.5">
-                    <input value={l.quantity} onChange={(e) => set(i, { quantity: e.target.value.replace(/[^\d.,]/g, '') })} disabled={!canEdit} className={cn(inputCls, 'num text-right')} />
+                    <input
+                      value={l.quantity}
+                      onChange={(e) => set(i, { quantity: e.target.value.replace(/[^\d.,]/g, '') })}
+                      disabled={!canEdit}
+                      className={cn(inputCls, 'num text-right')}
+                    />
                     <span className="text-xs text-muted">{sup?.unit ?? ''}</span>
                   </div>
                 </Field>
                 <p className="num w-28 pb-2.5 text-right text-sm">{clp(qty(l.quantity) * Number(sup?.netCost ?? 0))}</p>
                 {canEdit && (
-                  <button onClick={() => setLines(current.filter((_, j) => j !== i))} className="mb-1.5 rounded-lg p-2 text-muted hover:bg-stone-100" title="Quitar">
+                  <button
+                    onClick={() => setLines(current.filter((_, j) => j !== i))}
+                    className="mb-1.5 rounded-lg p-2 text-muted hover:bg-stone-100"
+                    title="Quitar"
+                  >
                     <Trash2 className="size-4" />
                   </button>
                 )}
@@ -312,7 +359,10 @@ function SupplyList({ supplies, loading }: { supplies?: Supply[]; loading: boole
     mutationFn: () =>
       api.createSupply({
         name: f.name.trim(),
-        sku: (f.sku.trim() || f.name.trim()).toUpperCase().replace(/[^A-Z0-9]+/g, '-').slice(0, 60),
+        sku: (f.sku.trim() || f.name.trim())
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, '-')
+          .slice(0, 60),
         unit: f.unit.trim() || 'unidad',
         netCost: String(parseAmount(f.cost) ?? 0),
       }),
@@ -336,7 +386,12 @@ function SupplyList({ supplies, loading }: { supplies?: Supply[]; loading: boole
             <input value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })} list="units" className={inputCls} />
           </Field>
           <Field label="Costo neto por unidad" className="w-40">
-            <input value={f.cost} onChange={(e) => setF({ ...f, cost: typingAmount(e.target.value) })} placeholder="$" className={cn(inputCls, 'num text-right')} />
+            <input
+              value={f.cost}
+              onChange={(e) => setF({ ...f, cost: typingAmount(e.target.value) })}
+              placeholder="$"
+              className={cn(inputCls, 'num text-right')}
+            />
           </Field>
           <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!f.name.trim()}>
             <Plus className="size-4" /> Agregar
@@ -353,7 +408,11 @@ function SupplyList({ supplies, loading }: { supplies?: Supply[]; loading: boole
       )}
       {!supplies?.length ? (
         <Card>
-          <Empty icon={<Layers className="size-6" />} title="Aún no tienes insumos" text="Carga los materiales con que fabricas (tela, espuma, madera, patas…) y su costo." />
+          <Empty
+            icon={<Layers className="size-6" />}
+            title="Aún no tienes insumos"
+            text="Carga los materiales con que fabricas (tela, espuma, madera, patas…) y su costo."
+          />
         </Card>
       ) : (
         <Card>
@@ -396,7 +455,12 @@ function SupplyRow({ s, onChange }: { s: Supply; onChange: () => void }) {
       <td className={cn(td, 'text-right')}>
         {canEdit ? (
           <div className="flex items-center justify-end gap-2">
-            <input value={value} onChange={(e) => setValue(typingAmount(e.target.value))} placeholder="$ costo" className={cn(inputCls, 'num w-32 text-right')} />
+            <input
+              value={value}
+              onChange={(e) => setValue(typingAmount(e.target.value))}
+              placeholder="$ costo"
+              className={cn(inputCls, 'num w-32 text-right')}
+            />
             {changed && (
               <Button size="sm" onClick={() => save.mutate()} loading={save.isPending} title="Guardar y recalcular los productos que lo usan">
                 <Check className="size-4" />
@@ -426,12 +490,26 @@ function SupplyRow({ s, onChange }: { s: Supply; onChange: () => void }) {
   );
 }
 
-function Unlinked({ items, products, loading }: { items: { retailerCode: string; retailer: string; sellerSku: string | null; name: string; sales: number }[]; products: Product[]; loading: boolean }) {
+function Unlinked({
+  items,
+  products,
+  loading,
+}: {
+  items: { retailerCode: string; retailer: string; sellerSku: string | null; name: string; sales: number }[];
+  products: Product[];
+  loading: boolean;
+}) {
   const qc = useQueryClient();
   const { canEdit } = useSession();
   const [choice, setChoice] = useState<Record<string, string>>({});
   const link = useMutation({
-    mutationFn: (i: (typeof items)[number]) => api.manualCatalogAssign({ retailerCode: i.retailerCode, sellerSku: i.sellerSku, name: i.name, productId: choice[`${i.retailerCode}|${i.sellerSku ?? i.name}`] }),
+    mutationFn: (i: (typeof items)[number]) =>
+      api.manualCatalogAssign({
+        retailerCode: i.retailerCode,
+        sellerSku: i.sellerSku,
+        name: i.name,
+        productId: choice[`${i.retailerCode}|${i.sellerSku ?? i.name}`],
+      }),
     onSuccess: () => {
       for (const k of ['reconciliation', 'sales', 'home']) qc.invalidateQueries({ queryKey: [k] });
     },
@@ -486,7 +564,8 @@ function NewProduct({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [f, setF] = useState({ skuMaster: '', name: '', cost: '' });
   const save = useMutation({
-    mutationFn: () => api.createProduct({ skuMaster: f.skuMaster.trim().toUpperCase(), name: f.name.trim(), provisionalCost: String(parseAmount(f.cost) ?? 0) }),
+    mutationFn: () =>
+      api.createProduct({ skuMaster: f.skuMaster.trim().toUpperCase(), name: f.name.trim(), provisionalCost: String(parseAmount(f.cost) ?? 0) }),
     onSuccess: () => {
       for (const k of ['products', 'onboarding', 'home']) qc.invalidateQueries({ queryKey: [k] });
       onClose();

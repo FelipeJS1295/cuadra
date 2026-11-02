@@ -5,20 +5,14 @@ import { DRIZZLE, type Database } from '../database/database.module.js';
 import { PENALTY_GROUP_KEY, retailers } from '../database/schema/index.js';
 import { PurchasesService, type RowDocument } from '../purchases/purchases.service.js';
 
-export type ReconciliationStatus =
-  | 'CONCILIADA'
-  | 'CON_DIFERENCIA'
-  | 'PENDIENTE'
-  | 'SIN_VENTA'
-  | 'CANCELADA'
-  | 'MULTA';
+export type ReconciliationStatus = 'CONCILIADA' | 'CON_DIFERENCIA' | 'PENDIENTE' | 'SIN_VENTA' | 'CANCELADA' | 'MULTA';
 
 export interface ReconciliationRow {
   status: ReconciliationStatus;
   /** Motivos de la diferencia (vacío si está conciliada) */
   reasons: string[];
   orderNumber: string | null;
-    /**
+  /**
    * N° de orden para mostrar. Igual a orderNumber, salvo en los retailers que liquidan con
    * otro número (Walmart: se muestra el N° de orden del cliente, solo números, y no la PO "P…")
    */
@@ -111,8 +105,7 @@ interface MatchConfig {
 }
 
 /** Ventas de despacho propio: columna Fulfillment vacía o "no" */
-export const NOT_FULFILLMENT_SQL =
-  "coalesce(lower(trim(fulfillment)), '') in ('', 'no', 'n', 'false', '0')";
+export const NOT_FULFILLMENT_SQL = "coalesce(lower(trim(fulfillment)), '') in ('', 'no', 'n', 'false', '0')";
 
 const DEFAULT_CONFIG: MatchConfig = { matchBy: 'ITEM', expectedPrice: 'PAID' };
 const MATCH_CONFIG: Record<string, MatchConfig> = {
@@ -136,6 +129,7 @@ const MATCH_CONFIG: Record<string, MatchConfig> = {
   RIPLEY: { matchBy: 'ITEM', expectedPrice: 'PAID' },
   // Mercado Libre / Mercado Pago: el pago es por orden
   MERCADOLIBRE: { matchBy: 'ORDER', expectedPrice: 'PAID' },
+  TIENDA: { matchBy: 'ORDER', expectedPrice: 'PAID' },
 };
 
 /**
@@ -172,23 +166,14 @@ export class ReconciliationService {
 
     const contractPct = Number(retailer.commissionPct) > 0 ? Number(retailer.commissionPct) : null;
     // Liquidaciones de la modalidad elegida (null = la normal)
-    const channelFilter = config.channel
-      ? sql`channel = ${config.channel}`
-      : sql.raw('channel is null');
+    const channelFilter = config.channel ? sql`channel = ${config.channel}` : sql.raw('channel is null');
 
     // Con qué se cruza la venta: su línea (Item id) o su orden completa
-    const matchKey = sql.raw(
-      { ITEM: 'external_item_id', ORDER: 'order_number', ORDER_ID: 'order_id' }[config.matchBy],
-    );
+    const matchKey = sql.raw({ ITEM: 'external_item_id', ORDER: 'order_number', ORDER_ID: 'order_id' }[config.matchBy]);
     // Qué precio se espera que pague el retailer, siempre CON IVA
     // (si la venta viene neta, como Walmart, se le suma el IVA)
-    const basePrice =
-      config.expectedPrice === 'UNIT'
-        ? 'coalesce(unit_price, paid_price)'
-        : 'coalesce(paid_price, unit_price)';
-    const expectedPrice = sql.raw(
-      `case when amounts_include_tax then ${basePrice} else round(${basePrice} * ${VAT_RATE}) end`,
-    );
+    const basePrice = config.expectedPrice === 'UNIT' ? 'coalesce(unit_price, paid_price)' : 'coalesce(paid_price, unit_price)';
+    const expectedPrice = sql.raw(`case when amounts_include_tax then ${basePrice} else round(${basePrice} * ${VAT_RATE}) end`);
 
     const { rows } = await this.db.execute(sql`
       with
@@ -277,10 +262,7 @@ export class ReconciliationService {
         status: 'CONCILIADA',
         reasons: [],
         orderNumber: r.order_number as string | null,
-                orderLabel:
-          config.matchBy === 'ORDER_ID'
-            ? ((r.item_id as string | null) ?? (r.order_number as string | null))
-            : (r.order_number as string | null),
+        orderLabel: config.matchBy === 'ORDER_ID' ? ((r.item_id as string | null) ?? (r.order_number as string | null)) : (r.order_number as string | null),
         itemId: r.item_id as string | null,
         orderDate: r.order_date as string | null,
         productName: r.product_name as string | null,
@@ -347,20 +329,14 @@ export class ReconciliationService {
           row.reasons.push('Orden cancelada');
         } else {
           // Si igual hay movimientos (ej: multa por cancelación), se muestran para revisarlos
-          row.reasons.push(
-            `Orden cancelada, pero la liquidación informa movimientos por ${clp(row.net ?? 0)}. Revisar`,
-          );
+          row.reasons.push(`Orden cancelada, pero la liquidación informa movimientos por ${clp(row.net ?? 0)}. Revisar`);
         }
         return row;
       }
       if (row.productPaid === null) {
         // Aún no paga: se muestra lo que deberíamos recibir, pero no hay resultado todavía
         row.status = 'PENDIENTE';
-        row.reasons.push(
-          r.has_settlement
-            ? 'Hay cobros, pero aún no se informa el pago del producto'
-            : 'No aparece en ninguna liquidación',
-        );
+        row.reasons.push(r.has_settlement ? 'Hay cobros, pero aún no se informa el pago del producto' : 'No aparece en ninguna liquidación');
         return row;
       }
 
@@ -384,9 +360,7 @@ export class ReconciliationService {
       if (row.salePrice !== null && salePaid !== 0) {
         const diff = salePaid - row.salePrice;
         if (Math.abs(diff) > TOLERANCE) {
-          row.reasons.push(
-            `Pago del producto ${diff > 0 ? 'mayor' : 'menor'} al precio de venta en ${clp(Math.abs(diff))}`,
-          );
+          row.reasons.push(`Pago del producto ${diff > 0 ? 'mayor' : 'menor'} al precio de venta en ${clp(Math.abs(diff))}`);
         }
       }
 
@@ -395,9 +369,7 @@ export class ReconciliationService {
         const expected = -(row.productPaid * row.commissionPct) / 100;
         const diff = row.commission - expected;
         if (Math.abs(diff) > TOLERANCE) {
-          row.reasons.push(
-            `Comisión cobrada ${clp(Math.abs(row.commission))} no corresponde al ${row.commissionPct}% (${clp(Math.abs(expected))})`,
-          );
+          row.reasons.push(`Comisión cobrada ${clp(Math.abs(row.commission))} no corresponde al ${row.commissionPct}% (${clp(Math.abs(expected))})`);
         }
       }
 
@@ -410,7 +382,7 @@ export class ReconciliationService {
       return row;
     });
 
-        // Documentos de compra de cada orden
+    // Documentos de compra de cada orden
     const docs = await this.purchases.documentsByItem(
       retailer.id,
       result.map((r) => r.itemId).filter((k): k is string => k !== null),
