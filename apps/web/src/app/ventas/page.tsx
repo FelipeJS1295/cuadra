@@ -1,7 +1,23 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, CloudUpload, FileText, PackageCheck, Printer, RefreshCw, Search, Send, ShoppingBag, Trash2, Truck, Upload } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  CalendarClock,
+  CloudUpload,
+  FileText,
+  PackageCheck,
+  Printer,
+  RefreshCw,
+  Search,
+  Send,
+  ShoppingBag,
+  Trash2,
+  Truck,
+  Upload,
+} from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useMemo, useState } from 'react';
 import { BulkDialog, SelectionBar, type BulkKind } from '@/components/bulk-actions';
@@ -56,6 +72,59 @@ const FILTERS: { id: Filter; label: string; match: (s: SaleRow) => boolean }[] =
 
 /** Celdas más angostas: la tabla de ventas tiene muchas columnas */
 const thc = th.replace('px-4', 'px-3');
+
+type SortKey = 'fecha' | 'cliente' | 'producto';
+type Sort = { by: SortKey; dir: 'asc' | 'desc' } | null;
+
+/** Ordena las ventas por la columna elegida; lo que no tiene dato queda siempre al final */
+function sortSales(list: SaleRow[], by: SortKey, dir: 'asc' | 'desc') {
+  const value = (s: SaleRow) => (by === 'fecha' ? (s.dispatchDeadline ?? s.orderDate) : by === 'cliente' ? s.retailer : (s.productName ?? s.retailName));
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const x = value(a);
+    const y = value(b);
+    if (!x && !y) return 0;
+    if (!x) return 1;
+    if (!y) return -1;
+    return sign * x.localeCompare(y, 'es', { sensitivity: 'base', numeric: true });
+  });
+}
+
+/** Título de columna que ordena: 1er clic ascendente, 2º descendente, 3º vuelve al orden original */
+function SortTh({
+  by,
+  sort,
+  onSort,
+  className,
+  title,
+  children,
+}: {
+  by: SortKey;
+  sort: Sort;
+  onSort: (s: Sort) => void;
+  className: string;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  const active = sort?.by === by;
+  const next = (): Sort => (!active ? { by, dir: 'asc' } : sort!.dir === 'asc' ? { by, dir: 'desc' } : null);
+  const Icon = !active ? ArrowUpDown : sort!.dir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <th className={className} title={title} aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(next())}
+        className={cn('-mx-1 inline-flex items-center gap-1 rounded px-1 hover:text-ink', active && 'text-ink')}
+        title={
+          !active ? 'Ordenar' : sort!.dir === 'asc' ? 'Ordenado de menor a mayor (clic: de mayor a menor)' : 'Ordenado de mayor a menor (clic: quitar orden)'
+        }
+      >
+        {children}
+        <Icon className={cn('size-3.5', !active && 'opacity-40')} aria-hidden />
+      </button>
+    </th>
+  );
+}
 const tdc = td.replace('px-4', 'px-3');
 
 const Dash = () => <span className="text-stone-300">—</span>;
@@ -159,6 +228,8 @@ function Sales() {
   const [detail, setDetail] = useState<SaleRow | null>(null);
   const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Orden de la tabla: clic en el título de la columna (sin orden = como llega, más recientes primero)
+  const [sort, setSort] = useState<{ by: SortKey; dir: 'asc' | 'desc' } | null>(null);
   const range = monthRange(month);
   const sales = useQuery({
     queryKey: ['sales', range.from, range.to],
@@ -179,11 +250,12 @@ function Sales() {
   const rows = useMemo(() => {
     const f = FILTERS.find((x) => x.id === filter)!;
     const q = search.trim().toLowerCase();
-    return all.filter(
+    const list = all.filter(
       (s) =>
         f.match(s) && (!q || [s.orderLabel, s.orderNumber, s.productName, s.retailName, s.parentSku, s.retailer].some((v) => v?.toLowerCase().includes(q))),
     );
-  }, [all, filter, search]);
+    return sort ? sortSales(list, sort.by, sort.dir) : list;
+  }, [all, filter, search, sort]);
   const withoutReceipt = all.filter((s) => !s.cancelled && !s.receipt && s.orderNumber && s.documentRequested === 'BOLETA');
   // Paris y Falabella piden la boleta en su portal: las emitidas desde Cuadra que aún no les llegan
   const conns = useQuery({
@@ -421,12 +493,16 @@ function Sales() {
                       <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Elegir todas" className="size-4 accent-brand-600" />
                     </th>
                   )}
-                  <th className={thc} title="Fecha en que hay que despachar (entregar al courier)">
+                  <SortTh by="fecha" sort={sort} onSort={setSort} className={thc} title="Fecha en que hay que despachar (entregar al courier)">
                     Despacho
-                  </th>
-                  <th className={thc}>Cliente</th>
+                  </SortTh>
+                  <SortTh by="cliente" sort={sort} onSort={setSort} className={thc}>
+                    Cliente
+                  </SortTh>
                   <th className={thc}>OC</th>
-                  <th className={thc}>Producto</th>
+                  <SortTh by="producto" sort={sort} onSort={setSort} className={thc}>
+                    Producto
+                  </SortTh>
                   <th className={thc}>Estado</th>
                   <th className={cn(thc, 'text-right whitespace-nowrap')} title="Lo que pagó el cliente: producto + envío, con IVA">
                     Venta + envío
