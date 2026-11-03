@@ -1,3 +1,4 @@
+import { deletedIndex } from '../sales/deleted-sales.js';
 import { CANCELLED_PATTERN, orderStateOfLines } from '@cuadra/shared';
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
@@ -652,7 +653,7 @@ export class RetailApiService {
       const orders = await p.orders(cfg, from, to, (m) => (job.message = m));
       job.stage = 'GUARDANDO';
       job.message = `Guardando ${orders.length} órdenes…`;
-      const { inSales, fromFile, newOrders } = await this.saveOrders(p.code, p.label, orders);
+      const { inSales, fromFile, newOrders, skippedDeleted } = await this.saveOrders(p.code, p.label, orders);
       // Liquidación por API (Ripley, Mercado Pago): lo que pagaron o descontaron por cada orden
       let settled = 0;
       if (p.settlements) {
@@ -694,6 +695,7 @@ export class RetailApiService {
           `${orders.length} ${orders.length === 1 ? 'orden' : 'órdenes'} de ${p.label} (${from} a ${to}): ` +
           `${inSales} ${inSales === 1 ? 'quedó' : 'quedaron'} en Ventas` +
           (fromFile ? ` · ${fromFile} ya ${fromFile === 1 ? 'estaba cargada' : 'estaban cargadas'} por archivo` : '') +
+          (skippedDeleted ? ` · ${skippedDeleted} ${skippedDeleted === 1 ? 'omitida porque la eliminaste' : 'omitidas porque las eliminaste'}` : '') +
           (settled ? ` · ${settled} movimientos de liquidación` : '') +
           (receipts?.missing ? ` · ${receipts.missing} ${receipts.missing === 1 ? 'boleta' : 'boletas'} que ${p.label} aún no tiene` : ''),
       };
@@ -804,7 +806,20 @@ export class RetailApiService {
     let inSales = 0;
     let fromFile = 0;
     let newOrders = 0;
+    let skippedDeleted = 0;
+    // Órdenes que el dueño eliminó de Ventas: no se vuelven a traer
+    const deleted = await deletedIndex(this.db, retailerId);
     for (const o of orders) {
+      const subOrders = o.items.map((i) => i.subOrderNumber);
+      if (
+        deleted.has(
+          [o.orderNumber, o.customerOrderId, o.externalId, ...subOrders],
+          o.items.map((i) => i.externalItemId),
+        )
+      ) {
+        skippedDeleted++;
+        continue;
+      }
       await this.db.transaction(async (tx) => {
         const values = {
           provider,
@@ -864,14 +879,17 @@ export class RetailApiService {
         else fromFile++;
       });
     }
-    return { inSales, fromFile, newOrders };
+    return { inSales, fromFile, newOrders, skippedDeleted };
   }
 
   /** Guarda los movimientos de liquidación de la API (si ya estaban, actualiza su estado de pago) */
   private async saveSettlements(provider: string, label: string, moves: NormalizedSettlement[]) {
     if (!moves.length) return 0;
     const retailerId = await retailerIdFor(this.db, provider, label);
-    const unique = new Map(moves.map((m) => [m.lineKey, m]));
+    // La liquidación de una orden eliminada tampoco se guarda
+    const deleted = await deletedIndex(this.db, retailerId);
+    const unique = new Map(moves.filter((m) => !deleted.has([m.orderNumber], [m.saleItemId])).map((m) => [m.lineKey, m]));
+    if (!unique.size) return 0;
     const values = [...unique.values()].map((m) => ({
       retailerId,
       lineKey: cut(m.lineKey, 300)!,

@@ -1,24 +1,19 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
-import { CurrentUser, type SessionUser } from '../auth/decorators.js';
+import { CurrentUser, Roles, type SessionUser } from '../auth/decorators.js';
 import { validate } from '../products/catalog.validation.js';
 import { SalesService } from './sales.service.js';
 
 /** Monto en pesos, mayor a 0: acepta 199990, "199.990" o "$199.990" */
-const amountSchema = z
-  .union([z.number(), z.string()], { error: 'Falta el total' })
-  .transform((value, ctx) => {
-    const text =
-      typeof value === 'number'
-        ? String(value)
-        : value.trim().replace(/[$\s]/g, '').replace(/\./g, '').replace(',', '.');
-    const n = Number(text);
-    if (text === '' || !Number.isFinite(n) || n <= 0) {
-      ctx.addIssue({ code: 'custom', message: 'El total debe ser un número mayor a 0' });
-      return z.NEVER;
-    }
-    return n.toFixed(2);
-  });
+const amountSchema = z.union([z.number(), z.string()], { error: 'Falta el total' }).transform((value, ctx) => {
+  const text = typeof value === 'number' ? String(value) : value.trim().replace(/[$\s]/g, '').replace(/\./g, '').replace(',', '.');
+  const n = Number(text);
+  if (text === '' || !Number.isFinite(n) || n <= 0) {
+    ctx.addIssue({ code: 'custom', message: 'El total debe ser un número mayor a 0' });
+    return z.NEVER;
+  }
+  return n.toFixed(2);
+});
 
 const receiptSchema = z.object({
   retailerCode: z.string({ error: 'Falta el retailer' }).min(1),
@@ -88,5 +83,35 @@ export class SalesController {
   @Delete('receipts/:id')
   deleteReceipt(@Param('id', ParseUUIDPipe) id: string) {
     return this.sales.deleteReceipt(id);
+  }
+
+  /** Elimina órdenes de Ventas. Solo el dueño de la empresa (con @Roles('DUENO') el AuthGuard rechaza a los demás) */
+  @Post('delete')
+  @Roles('DUENO')
+  deleteOrders(@Body() body: unknown, @CurrentUser() user: SessionUser) {
+    const { orders } = validate(
+      z.object({
+        orders: z
+          .array(z.object({ retailerCode: z.string().min(1).max(40), orderNumber: z.string().min(1).max(80) }), { error: 'Faltan las órdenes' })
+          .min(1, 'Elige al menos una venta')
+          .max(500, 'Máximo 500 ventas a la vez'),
+      }),
+      body,
+    );
+    return this.sales.deleteOrders(orders, { id: user?.id ?? null, name: user?.name ?? user?.email ?? null });
+  }
+
+  /** Ventas eliminadas (solo el dueño) */
+  @Get('deleted')
+  @Roles('DUENO')
+  listDeleted() {
+    return this.sales.listDeleted();
+  }
+
+  /** Permite que una venta eliminada vuelva en la próxima sincronización (solo el dueño) */
+  @Delete('deleted/:id')
+  @Roles('DUENO')
+  allowDeleted(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sales.allowDeleted(id);
   }
 }

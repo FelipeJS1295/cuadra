@@ -1,3 +1,4 @@
+import { deletedIndex } from '../sales/deleted-sales.js';
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { readExcelTable } from '../common/excel-reader.js';
@@ -95,6 +96,13 @@ export class SettlementsService {
         if (!(err instanceof RowError)) throw err;
         errors.push({ row: rowNumber, message: err.message });
       }
+    }
+
+    // Movimientos de órdenes que el dueño eliminó de Ventas: no se cargan
+    const deleted = await deletedIndex(this.db, retailerId);
+    if (deleted.size) {
+      const keep = records.filter((r) => !deleted.has([r.orderNumber], [r.saleItemId]));
+      records.splice(0, records.length, ...keep);
     }
 
     let inserted = 0;

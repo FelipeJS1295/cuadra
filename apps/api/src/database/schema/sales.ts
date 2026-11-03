@@ -1,18 +1,5 @@
 import { tenantId } from './tenant.js';
-import {
-  boolean,
-  date,
-  integer,
-  index,
-  jsonb,
-  numeric,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-  varchar,
-} from 'drizzle-orm/pg-core';
+import { boolean, date, integer, index, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { retailers } from './retailers.js';
 
 /**
@@ -24,7 +11,7 @@ export const salesRecords = pgTable(
   'sales_records',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-  tenantId: tenantId(),
+    tenantId: tenantId(),
 
     retailerId: uuid('retailer_id')
       .notNull()
@@ -106,3 +93,32 @@ export const salesRecords = pgTable(
 
 export type SalesRecord = typeof salesRecords.$inferSelect;
 export type NewSalesRecord = typeof salesRecords.$inferInsert;
+/**
+ * Ventas eliminadas por el dueño de la empresa (pruebas, duplicados…).
+ * Sirve de registro (quién, cuándo, qué tenía) y para no volver a traerlas: al sincronizar por
+ * API, al subir un archivo o al recibirlas de un cliente de Cuadra, estas órdenes se omiten.
+ */
+export const deletedSales = pgTable(
+  'deleted_sales',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantId(),
+    retailerId: uuid('retailer_id')
+      .notNull()
+      .references(() => retailers.id),
+    /** N° de orden como lo muestra Ventas */
+    orderNumber: varchar('order_number', { length: 80 }).notNull(),
+    /** Otros números de la misma orden (id de la orden, N° del cliente, sub-órdenes) */
+    otherNumbers: jsonb('other_numbers').$type<string[]>().notNull().default([]),
+    /** Ids de las líneas eliminadas (para omitirlas aunque cambie el N° de orden) */
+    itemIds: jsonb('item_ids').$type<string[]>().notNull().default([]),
+    /** Resumen de lo eliminado: cliente, fecha, total, productos */
+    summary: jsonb('summary').$type<Record<string, unknown>>(),
+    deletedBy: uuid('deleted_by'),
+    deletedByName: varchar('deleted_by_name', { length: 200 }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('deleted_sales_order_uq').on(t.tenantId, t.retailerId, t.orderNumber)],
+);
+
+export type DeletedSale = typeof deletedSales.$inferSelect;

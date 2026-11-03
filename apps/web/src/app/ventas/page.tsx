@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, CloudUpload, FileText, PackageCheck, Printer, RefreshCw, Search, Send, ShoppingBag, Truck, Upload } from 'lucide-react';
+import { CalendarClock, CloudUpload, FileText, PackageCheck, Printer, RefreshCw, Search, Send, ShoppingBag, Trash2, Truck, Upload } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useMemo, useState } from 'react';
 import { BulkDialog, SelectionBar, type BulkKind } from '@/components/bulk-actions';
@@ -12,6 +12,7 @@ import { DispatchBoard } from '@/components/dispatch-board';
 import { FacturaLote } from '@/components/factura-lote';
 import { ParisPickups } from '@/components/paris-logistics';
 import { RetailLabels } from '@/components/retail-labels';
+import { DeletedSales, DeleteSales } from '@/components/delete-sales';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -134,7 +135,9 @@ export default function SalesPage() {
 
 function Sales() {
   const params = useSearchParams();
-  const { canEdit, isFactory } = useSession();
+  const { canEdit, isFactory, user } = useSession();
+  // Eliminar ventas: solo el dueño de la empresa
+  const isOwner = user.role === 'DUENO';
   const qc = useQueryClient();
   const [month, setMonth] = useState(todayCL().slice(0, 7));
   const [filter, setFilter] = useState<Filter>((params.get('filtro') as Filter) ?? 'todas');
@@ -148,6 +151,8 @@ function Sales() {
   const [facturing, setFacturing] = useState(false);
   const [pickups, setPickups] = useState(false);
   const [labels, setLabels] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deletedList, setDeletedList] = useState(false);
   // Envíame (Paris): retiros y etiquetas
   const enviame = useQuery({ queryKey: ['enviame-status'], queryFn: api.enviameStatus, staleTime: 300_000 });
   const labelProviders = useQuery({ queryKey: ['label-providers'], queryFn: api.labelProviders, staleTime: 300_000 });
@@ -272,6 +277,11 @@ function Sales() {
           <Button variant="secondary" onClick={() => setBoard(true)}>
             <Truck className="size-4" /> Maestra de despachos
           </Button>
+          {isOwner && (
+            <Button variant="ghost" onClick={() => setDeletedList(true)} title="Ventas que eliminaste: Cuadra no las vuelve a traer">
+              <Trash2 className="size-4" /> Eliminadas
+            </Button>
+          )}
           {canEdit && enviame.data?.connected && (
             <Button variant="secondary" onClick={() => setPickups(true)}>
               <CalendarClock className="size-4" /> Retiros Paris
@@ -592,6 +602,16 @@ function Sales() {
           }}
         />
       )}
+      {deleting && (
+        <DeleteSales
+          sales={chosen}
+          onClose={() => {
+            setDeleting(false);
+            setSelected(new Set());
+          }}
+        />
+      )}
+      {deletedList && <DeletedSales onClose={() => setDeletedList(false)} />}
       {facturing && (
         <FacturaLote
           sales={chosen}
@@ -651,6 +671,15 @@ function Sales() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20"
                 >
                   <Printer className="size-4" /> Etiquetas
+                </button>
+              )}
+              {/* Solo el dueño: eliminar las ventas elegidas */}
+              {isOwner && (
+                <button
+                  onClick={() => setDeleting(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-berry-500/90 px-3 py-1.5 font-medium hover:bg-berry-500"
+                >
+                  <Trash2 className="size-4" /> Eliminar
                 </button>
               )}
               {/* Empresas de compra y venta: enviar las ventas al proveedor (si usa Cuadra) */}

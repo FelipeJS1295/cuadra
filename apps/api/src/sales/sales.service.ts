@@ -1,8 +1,8 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { CANCELLED_PATTERN, orderStateOf, orderStateOfLines, PRICING_CHANNELS, type OrderState } from '@cuadra/shared';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
-import { customerReceipts, retailers } from '../database/schema/index.js';
+import { creditNotes, customerReceipts, deletedSales, retailApiOrders, retailers, salesRecords, settlementRecords } from '../database/schema/index.js';
 import { NOT_FULFILLMENT_SQL, ReconciliationService, showsCustomerOrderId } from '../settlements/reconciliation.service.js';
 import { SettingsService } from '../company/settings.service.js';
 import { SettlementsService } from '../settlements/settlements.service.js';
@@ -636,6 +636,152 @@ export class SalesService {
     const [row] = await this.db.delete(customerReceipts).where(eq(customerReceipts.id, id)).returning({ id: customerReceipts.id });
     if (!row) throw new NotFoundException('La boleta ya no existe');
     return { deleted: true };
+  }
+
+  /**
+   * Elimina órdenes de Ventas (solo el dueño de la empresa): sus líneas, la orden traída por API,
+   * su liquidación y la boleta aún no emitida. Queda registrada en "ventas eliminadas" para no
+   * volver a traerla. No se elimina si tiene una boleta emitida en el SII o una nota de crédito
+   * (son documentos tributarios: primero hay que anularlos).
+   */
+  async deleteOrders(orders: { retailerCode: string; orderNumber: string }[], user: { id: string | null; name: string | null }) {
+    const deleted: string[] = [];
+    const skipped: { order: string; reason: string }[] = [];
+    for (const { retailerCode, orderNumber } of orders) {
+      const label = `${retailerCode} ${orderNumber}`;
+      const [r] = await this.db.select({ id: retailers.id, name: retailers.name }).from(retailers).where(eq(retailers.code, retailerCode));
+      if (!r) {
+        skipped.push({ order: label, reason: 'No se encontró el canal' });
+        continue;
+      }
+      const lines = await this.db
+        .select()
+        .from(salesRecords)
+        .where(and(eq(salesRecords.retailerId, r.id), eq(salesRecords.orderNumber, orderNumber)));
+      if (!lines.length) {
+        skipped.push({ order: `${r.name} ${orderNumber}`, reason: 'La venta ya no existe' });
+        continue;
+      }
+      const [receipt] = await this.db
+        .select({ status: customerReceipts.status, number: customerReceipts.receiptNumber })
+        .from(customerReceipts)
+        .where(and(eq(customerReceipts.retailerId, r.id), eq(customerReceipts.orderNumber, orderNumber)));
+      if (receipt && (receipt.status === 'EMITIDA' || receipt.status === 'EMITIENDO')) {
+        skipped.push({
+          order: `${r.name} ${orderNumber}`,
+          reason: `Tiene la boleta N° ${receipt.number} emitida en el SII: primero hay que anularla con una nota de crédito`,
+        });
+        continue;
+      }
+      const [nc] = await this.db
+        .select({ id: creditNotes.id })
+        .from(creditNotes)
+        .where(and(eq(creditNotes.retailerId, r.id), eq(creditNotes.orderNumber, orderNumber)))
+        .limit(1);
+      if (nc) {
+        skipped.push({ order: `${r.name} ${orderNumber}`, reason: 'Tiene una nota de crédito asociada' });
+        continue;
+      }
+
+      // Todos los números con que el retailer identifica esta orden
+      const itemIds = [...new Set(lines.map((l) => l.externalItemId))];
+      const numbers = new Set<string>([orderNumber, ...lines.map((l) => l.orderId).filter((x): x is string => Boolean(x))]);
+      const apiOrders = await this.db
+        .select({
+          id: retailApiOrders.id,
+          externalId: retailApiOrders.externalId,
+          orderNumber: retailApiOrders.orderNumber,
+          customerOrderId: retailApiOrders.customerOrderId,
+        })
+        .from(retailApiOrders)
+        .where(
+          and(
+            eq(retailApiOrders.provider, retailerCode),
+            or(
+              inArray(retailApiOrders.orderNumber, [...numbers]),
+              inArray(retailApiOrders.customerOrderId, [...numbers]),
+              inArray(retailApiOrders.externalId, [...numbers]),
+            ),
+          ),
+        );
+      for (const a of apiOrders) for (const n of [a.externalId, a.orderNumber, a.customerOrderId]) if (n) numbers.add(n);
+      const nums = [...numbers];
+
+      const summary = {
+        canal: r.name,
+        fecha: lines[0].orderDate,
+        cliente: lines[0].billingLegalName || lines[0].customerName || lines[0].shippingName,
+        estado: lines[0].status,
+        origen: (lines[0].raw as Record<string, unknown> | null)?.__origen ?? 'ARCHIVO',
+        productos: lines.map((l) => ({ sku: l.sellerSku, nombre: l.productName, cantidad: l.quantity, precio: l.paidPrice ?? l.unitPrice })),
+      };
+
+      await this.db.transaction(async (tx) => {
+        await tx.delete(salesRecords).where(
+          and(
+            eq(salesRecords.retailerId, r.id),
+            inArray(
+              salesRecords.id,
+              lines.map((l) => l.id),
+            ),
+          ),
+        );
+        if (apiOrders.length)
+          await tx.delete(retailApiOrders).where(
+            inArray(
+              retailApiOrders.id,
+              apiOrders.map((a) => a.id),
+            ),
+          ); // sus productos se borran en cascada
+        await tx
+          .delete(settlementRecords)
+          .where(and(eq(settlementRecords.retailerId, r.id), or(inArray(settlementRecords.orderNumber, nums), inArray(settlementRecords.saleItemId, itemIds))));
+        await tx.delete(customerReceipts).where(and(eq(customerReceipts.retailerId, r.id), eq(customerReceipts.orderNumber, orderNumber)));
+        await tx
+          .insert(deletedSales)
+          .values({
+            retailerId: r.id,
+            orderNumber,
+            otherNumbers: nums.filter((n) => n !== orderNumber),
+            itemIds,
+            summary,
+            deletedBy: user.id,
+            deletedByName: user.name,
+          })
+          .onConflictDoUpdate({
+            target: [deletedSales.tenantId, deletedSales.retailerId, deletedSales.orderNumber],
+            set: { otherNumbers: nums.filter((n) => n !== orderNumber), itemIds, summary, deletedBy: user.id, deletedByName: user.name, deletedAt: new Date() },
+          });
+      });
+      deleted.push(`${r.name} ${orderNumber}`);
+    }
+    return { deleted: deleted.length, deletedOrders: deleted, skipped };
+  }
+
+  /** Ventas eliminadas (las más recientes primero) */
+  async listDeleted() {
+    const rows = await this.db
+      .select({
+        id: deletedSales.id,
+        retailer: retailers.name,
+        retailerCode: retailers.code,
+        orderNumber: deletedSales.orderNumber,
+        summary: deletedSales.summary,
+        deletedByName: deletedSales.deletedByName,
+        deletedAt: deletedSales.deletedAt,
+      })
+      .from(deletedSales)
+      .innerJoin(retailers, eq(retailers.id, deletedSales.retailerId))
+      .orderBy(desc(deletedSales.deletedAt))
+      .limit(500);
+    return rows.map((r) => ({ ...r, deletedAt: r.deletedAt.toISOString() }));
+  }
+
+  /** Quita una venta de la lista de eliminadas: la próxima sincronización o archivo la vuelve a traer */
+  async allowDeleted(id: string) {
+    const [row] = await this.db.delete(deletedSales).where(eq(deletedSales.id, id)).returning({ id: deletedSales.id });
+    if (!row) throw new NotFoundException('Ya no está en la lista de eliminadas');
+    return { allowed: true };
   }
 
   /**

@@ -646,6 +646,17 @@ export interface Dashboard {
 
 export type UserRole = 'DUENO' | 'ADMIN' | 'OPERADOR' | 'LECTURA';
 
+/** Venta eliminada por el dueño (Cuadra no la vuelve a traer) */
+export interface DeletedSale {
+  id: string;
+  retailer: string;
+  retailerCode: string;
+  orderNumber: string;
+  summary: Record<string, unknown> | null;
+  deletedByName: string | null;
+  deletedAt: string;
+}
+
 export interface MyTenant {
   id: string;
   name: string;
@@ -1531,6 +1542,14 @@ export const api = {
   saveReceipt: (data: { retailerCode: string; orderNumber: string; receiptNumber: string; totalGross: string }) =>
     request<{ id: string }>('/sales/receipts', { method: 'POST', body: JSON.stringify(data) }),
   deleteReceipt: (id: string) => request<{ deleted: boolean }>(`/sales/receipts/${id}`, { method: 'DELETE' }),
+  /** Eliminar ventas (solo el dueño): no vuelven a traerse */
+  deleteSales: (orders: { retailerCode: string; orderNumber: string }[]) =>
+    request<{ deleted: number; deletedOrders: string[]; skipped: { order: string; reason: string }[] }>('/sales/delete', {
+      method: 'POST',
+      body: JSON.stringify({ orders }),
+    }),
+  deletedSales: () => request<DeletedSale[]>('/sales/deleted'),
+  allowDeletedSale: (id: string) => request<{ allowed: boolean }>(`/sales/deleted/${id}`, { method: 'DELETE' }),
 
   /** Maestra de retailers */
   listRetailers: () => request<RetailerMaster[]>('/retailers'),

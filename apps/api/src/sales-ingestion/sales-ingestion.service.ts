@@ -1,3 +1,4 @@
+import { deletedIndex } from '../sales/deleted-sales.js';
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { readExcelTable } from '../common/excel-reader.js';
@@ -59,12 +60,7 @@ export class SalesIngestionService {
 
     // 1 y 2. Leer el archivo (Excel o CSV) y verificar que sea el correcto:
     // si faltan columnas obligatorias, se rechaza indicando cuáles
-    const { rows } = await readExcelTable(
-      buffer,
-      adapter.requiredHeaders,
-      adapter.retailerName,
-      fileName,
-    );
+    const { rows } = await readExcelTable(buffer, adapter.requiredHeaders, adapter.retailerName, fileName);
 
     // 3. Convertir cada fila; las que fallan se informan sin detener la carga
     const errors: ImportResult['errors'] = [];
@@ -95,14 +91,18 @@ export class SalesIngestionService {
       retailerId,
       sales.map((s) => s.orderNumber!),
     );
+    // Órdenes que el dueño eliminó de Ventas: no se vuelven a cargar
+    const deleted = await deletedIndex(this.db, retailerId);
     const toInsert = sales
-      .filter((s) => !existing.has(s.orderNumber!))
+      .filter((s) => !existing.has(s.orderNumber!) && !deleted.has([s.orderNumber, s.orderId], [s.externalItemId]))
       .map((s) => ({ ...s, retailerId }));
     // Órdenes que estaban solo por API: las reemplaza el archivo (trae más datos)
     const replaceApi = [...new Set(toInsert.map((s) => s.orderNumber!).concat(toInsert.map((s) => s.orderId).filter((x): x is string => Boolean(x))))];
 
     const skippedRows = sales.length - toInsert.length;
-    const skippedOrders = new Set(sales.map((s) => s.orderNumber).filter((o) => existing.has(o!))).size;
+    const skippedOrders = new Set(
+      sales.filter((s) => existing.has(s.orderNumber!) || deleted.has([s.orderNumber, s.orderId], [s.externalItemId])).map((s) => s.orderNumber),
+    ).size;
 
     // 5. Guardar en una transacción: o se guarda completo, o nada
     let inserted = 0;
@@ -163,10 +163,7 @@ export class SalesIngestionService {
       .values({ code: adapter.retailerCode, name: adapter.retailerName })
       .onConflictDoNothing({ target: [retailers.tenantId, retailers.code] });
 
-    const [retailer] = await this.db
-      .select({ id: retailers.id })
-      .from(retailers)
-      .where(eq(retailers.code, adapter.retailerCode));
+    const [retailer] = await this.db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, adapter.retailerCode));
     return retailer.id;
   }
 }

@@ -1,3 +1,4 @@
+import { deletedIndex } from '../sales/deleted-sales.js';
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { CANCELLED_PATTERN, PRICING_CHANNELS } from '@cuadra/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -45,7 +46,9 @@ export class B2bService {
 
   /** Empresas de Cuadra por RUT (fuera de la empresa actual) */
   private async platformByRut() {
-    const rows = await this.base.select({ id: tenants.id, name: tenants.name, legalName: tenants.legalName, taxId: tenants.taxId, status: tenants.status }).from(tenants);
+    const rows = await this.base
+      .select({ id: tenants.id, name: tenants.name, legalName: tenants.legalName, taxId: tenants.taxId, status: tenants.status })
+      .from(tenants);
     const map = new Map<string, (typeof rows)[number]>();
     for (const t of rows) if (t.taxId && t.status === 'ACTIVA' && t.id !== currentTenantId()) map.set(normRut(t.taxId), t);
     return map;
@@ -149,7 +152,15 @@ export class B2bService {
         await this.db
           .select({ sku: retailerProducts.retailerSku, price: retailerProducts.listPrice })
           .from(retailerProducts)
-          .where(and(eq(retailerProducts.retailerId, retailerId), inArray(retailerProducts.retailerSku, skus.map(([s]) => s))))
+          .where(
+            and(
+              eq(retailerProducts.retailerId, retailerId),
+              inArray(
+                retailerProducts.retailerSku,
+                skus.map(([s]) => s),
+              ),
+            ),
+          )
       ).map((p) => [p.sku, p.price]),
     );
 
@@ -159,10 +170,21 @@ export class B2bService {
         await this.db
           .select({ key: salesRecords.externalItemId })
           .from(salesRecords)
-          .where(and(eq(salesRecords.retailerId, retailerId), inArray(salesRecords.externalItemId, lines.map((l) => `CQ|${l.lineId}`))))
+          .where(
+            and(
+              eq(salesRecords.retailerId, retailerId),
+              inArray(
+                salesRecords.externalItemId,
+                lines.map((l) => `CQ|${l.lineId}`),
+              ),
+            ),
+          )
       ).map((r) => r.key),
     );
+    // Ventas que el dueño eliminó: si el cliente las reenvía, no vuelven a entrar
+    const deleted = await deletedIndex(this.db, retailerId);
     for (const l of lines) {
+      if (deleted.has([l.orderNumber], [`CQ|${l.lineId}`])) continue;
       const price = prices.get(l.sku) ?? null;
       const values = {
         retailerId,
@@ -210,7 +232,9 @@ export class B2bService {
     const newProducts = inserted.length;
     await this.db.insert(notifications).values({
       kind: 'VENTAS_RECIBIDAS',
-      title: newLines ? `${sender.name} te envió ${orders} ${orders === 1 ? 'venta' : 'ventas'}` : `${sender.name} actualizó ${orders} ${orders === 1 ? 'venta' : 'ventas'}`,
+      title: newLines
+        ? `${sender.name} te envió ${orders} ${orders === 1 ? 'venta' : 'ventas'}`
+        : `${sender.name} actualizó ${orders} ${orders === 1 ? 'venta' : 'ventas'}`,
       body:
         `${units} ${units === 1 ? 'unidad' : 'unidades'}` +
         (newProducts ? ` · ${newProducts} ${newProducts === 1 ? 'producto nuevo' : 'productos nuevos'} por configurar (precio, SKU padre/color)` : ''),
@@ -267,7 +291,11 @@ export class B2bService {
    * nombre y su producto (para el costo). El precio se aplica a las ventas de ese producto que aún
    * no tienen documento emitido.
    */
-  async updateClientProduct(id: string, input: { price?: number | null; parentSku?: string | null; name?: string | null; productId?: string | null }, user: string) {
+  async updateClientProduct(
+    id: string,
+    input: { price?: number | null; parentSku?: string | null; name?: string | null; productId?: string | null },
+    user: string,
+  ) {
     const [row] = await this.db
       .select({ id: retailerProducts.id, retailerId: retailerProducts.retailerId, sku: retailerProducts.retailerSku, code: retailers.code })
       .from(retailerProducts)
@@ -293,7 +321,14 @@ export class B2bService {
       if (!input.parentSku?.trim()) {
         await this.db.delete(retailSkuNames).where(and(eq(retailSkuNames.provider, row.code), eq(retailSkuNames.sellerSku, sku)));
       } else {
-        const values = { provider: row.code, sellerSku: sku, parentSku: input.parentSku.trim().toUpperCase(), name: (input.name?.trim() || row.sku).slice(0, 300), updatedBy: user, updatedAt: new Date() };
+        const values = {
+          provider: row.code,
+          sellerSku: sku,
+          parentSku: input.parentSku.trim().toUpperCase(),
+          name: (input.name?.trim() || row.sku).slice(0, 300),
+          updatedBy: user,
+          updatedAt: new Date(),
+        };
         await this.db
           .insert(retailSkuNames)
           .values(values)
@@ -354,10 +389,21 @@ export class B2bService {
       const ids = mine.map((m) => m.line_id).filter((x) => /^[0-9a-f-]{36}$/i.test(x));
       const current = await runInBackground(this.base, sender, async () => {
         if (!ids.length) return [];
-        const { rows: cur } = await this.db.execute<{ id: string; code: string; status: string | null; deadline: string | null; carrier: string | null; quantity: number; sent: string | null }>(sql`
+        const { rows: cur } = await this.db.execute<{
+          id: string;
+          code: string;
+          status: string | null;
+          deadline: string | null;
+          carrier: string | null;
+          quantity: number;
+          sent: string | null;
+        }>(sql`
           select s.id, r.code, s.status, s.dispatch_deadline::text as deadline, s.carrier, s.quantity, s.sent_to_supplier as sent
           from sales_records s join retailers r on r.id = s.retailer_id
-          where s.id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})
+          where s.id in (${sql.join(
+            ids.map((i) => sql`${i}::uuid`),
+            sql`, `,
+          )})
         `);
         return cur;
       });
@@ -391,7 +437,11 @@ export class B2bService {
   // ------------------------------------------------------------------ Avisos
 
   async notifications() {
-    const rows = await this.db.select().from(notifications).orderBy(sql`${notifications.createdAt} desc`).limit(30);
+    const rows = await this.db
+      .select()
+      .from(notifications)
+      .orderBy(sql`${notifications.createdAt} desc`)
+      .limit(30);
     return { unread: rows.filter((n) => !n.readAt).length, items: rows };
   }
 

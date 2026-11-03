@@ -106,6 +106,13 @@
       "when": 1793279892209,
       "tag": "0014_actividad_usuarios",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793705989334,
+      "tag": "0015_ventas_eliminadas",
+      "breakpoints": true
     }
   ]
 }
