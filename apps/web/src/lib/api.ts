@@ -1663,6 +1663,14 @@ export const api = {
 
   // Etiquetas de despacho desde la API de cada retailer
   labelProviders: () => request<{ code: string; label: string }[]>('/retail-api/labels/providers'),
+  /** Aceptar órdenes en el retailer (Walmart) */
+  acceptProviders: () => request<{ code: string; label: string }[]>('/retail-api/accept/providers'),
+  acceptOrders: (orders: { retailerCode: string; orderNumber: string }[]) =>
+    request<{
+      accepted: number;
+      orders: { retailer: string; orderNumber: string; status: string }[];
+      problems: { retailer: string; orderNumber: string; message: string }[];
+    }>('/retail-api/accept', { method: 'POST', body: JSON.stringify({ orders }) }),
   retailLabels: async (orders: { retailerCode: string; orderNumber: string }[], pack: boolean) => {
     const res = await fetch(`${API_URL}/retail-api/labels`, {
       method: 'POST',

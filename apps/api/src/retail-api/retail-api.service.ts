@@ -1,7 +1,7 @@
 import { deletedIndex } from '../sales/deleted-sales.js';
 import { CANCELLED_PATTERN, orderStateOfLines } from '@cuadra/shared';
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { BASE_DB, DRIZZLE, type Database } from '../database/database.module.js';
 import { currentTenantId, runInBackground } from '../database/tenant-context.js';
@@ -13,6 +13,7 @@ import {
   retailApiProducts,
   retailProductChanges,
   retailSkuNames,
+  salesRecords,
   settlementRecords,
 } from '../database/schema/index.js';
 import { PROVIDERS, providerByCode } from './providers/index.js';
@@ -361,6 +362,72 @@ export class RetailApiService {
   async labelProviders() {
     const rows = await this.db.select({ provider: retailApiConnections.provider, enabled: retailApiConnections.enabled }).from(retailApiConnections);
     return PROVIDERS.filter((p) => p.labels && rows.some((r) => r.provider === p.code && r.enabled)).map((p) => ({ code: p.code, label: p.label }));
+  }
+
+  /** Retailers conectados donde se pueden aceptar órdenes desde Cuadra (Walmart) */
+  async acceptProviders() {
+    const rows = await this.db.select({ provider: retailApiConnections.provider, enabled: retailApiConnections.enabled }).from(retailApiConnections);
+    return PROVIDERS.filter((p) => p.acceptOrders && rows.some((r) => r.provider === p.code && r.enabled)).map((p) => ({ code: p.code, label: p.label }));
+  }
+
+  /**
+   * Acepta órdenes en el retailer y deja su nuevo estado en Ventas (tanto las que llegaron por
+   * API como las cargadas por archivo). Lo que no se pudo vuelve en "problems" con el motivo.
+   */
+  async acceptOrders(orders: { retailerCode: string; orderNumber: string }[]) {
+    const problems: { retailer: string; orderNumber: string; message: string }[] = [];
+    const accepted: { retailer: string; orderNumber: string; status: string | null }[] = [];
+    const byProvider = new Map<string, string[]>();
+    for (const o of orders) byProvider.set(o.retailerCode, [...new Set([...(byProvider.get(o.retailerCode) ?? []), o.orderNumber])]);
+
+    for (const [code, nums] of byProvider) {
+      const p = providerByCode(code);
+      const r = p?.acceptOrders ? await this.row(p.code) : null;
+      if (!p?.acceptOrders || !r?.enabled) {
+        const label = p?.label ?? code;
+        for (const n of nums) problems.push({ retailer: label, orderNumber: n, message: `${label}: las órdenes se aceptan en su portal` });
+        continue;
+      }
+      const rows = await this.db
+        .select({
+          orderNumber: retailApiOrders.orderNumber,
+          customerOrderId: retailApiOrders.customerOrderId,
+          externalId: retailApiOrders.externalId,
+          raw: retailApiOrders.raw,
+        })
+        .from(retailApiOrders)
+        .where(
+          sql`${retailApiOrders.provider} = ${p.code} and (${retailApiOrders.orderNumber} in ${nums} or ${retailApiOrders.customerOrderId} in ${nums} or ${retailApiOrders.externalId} in ${nums})`,
+        );
+      const list = nums.map((n) => {
+        const row = rows.find((x) => x.orderNumber === n || x.customerOrderId === n || x.externalId === n);
+        return { orderNumber: n, externalId: row?.externalId ?? null, raw: (row?.raw ?? null) as Record<string, unknown> | null };
+      });
+      const res = await p.acceptOrders(await this.config(p), list);
+      for (const x of res.problems) problems.push({ retailer: p.label, ...x });
+
+      // Nuevo estado en Ventas: la orden actualizada pasa por el mismo camino que una sincronización
+      const fresh = res.accepted.map((a) => a.order).filter((o): o is NormalizedOrder => o !== null);
+      if (fresh.length) await this.saveOrders(p.code, p.label, fresh);
+      const retailerId = await retailerIdFor(this.db, p.code, p.label);
+      for (const a of res.accepted) {
+        const status = a.order?.status ?? 'Acknowledged';
+        const numbers = [a.orderNumber, a.order?.orderNumber, a.order?.customerOrderId].filter((x): x is string => Boolean(x));
+        // Las líneas cargadas por archivo no las toca la sincronización: se actualizan aquí
+        await this.db
+          .update(salesRecords)
+          .set({ status: status.slice(0, 50) })
+          .where(
+            and(
+              eq(salesRecords.retailerId, retailerId),
+              sql`(${salesRecords.orderNumber} in ${numbers} or ${salesRecords.orderId} in ${numbers})`,
+              sql`coalesce(${salesRecords.status}, '') !~* 'ship|deliver|cancel|refund|return'`,
+            ),
+          );
+        accepted.push({ retailer: p.label, orderNumber: a.orderNumber, status });
+      }
+    }
+    return { accepted: accepted.length, orders: accepted, problems };
   }
 
   /**

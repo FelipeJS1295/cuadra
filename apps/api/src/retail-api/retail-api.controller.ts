@@ -111,6 +111,30 @@ export class RetailApiController {
     res.send(r.pdf);
   }
 
+  // ---------- Aceptar órdenes en el retailer (Walmart: acknowledge)
+  //   GET  /api/retail-api/accept/providers   retailers donde se puede
+  //   POST /api/retail-api/accept { orders }  [{ retailerCode, orderNumber }]
+
+  @Get('accept/providers')
+  acceptProviders() {
+    return this.service.acceptProviders();
+  }
+
+  @Post('accept')
+  @HttpCode(200)
+  acceptOrders(@Body() body: unknown) {
+    const { orders } = validate(
+      z.object({
+        orders: z
+          .array(z.object({ retailerCode: z.string().min(1).max(40), orderNumber: z.string().min(1).max(80) }), { error: 'Faltan las órdenes' })
+          .min(1, 'Elige al menos una orden')
+          .max(100, 'Máximo 100 órdenes a la vez'),
+      }),
+      body,
+    );
+    return this.service.acceptOrders(orders);
+  }
+
   // ---------- Envíame (Paris): retiros y etiquetas
   //   GET  /api/retail-api/enviame/status             ¿está conectado?
   //   GET  /api/retail-api/enviame/setup              bodegas, couriers y último retiro

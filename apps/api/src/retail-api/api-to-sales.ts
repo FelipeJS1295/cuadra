@@ -35,7 +35,10 @@ function lineKey(provider: string, o: NormalizedOrder, itemId: string, sku: stri
 
 /** Id del retailer en la empresa (lo crea si no estuviera) */
 export async function retailerIdFor(db: Database | Tx, code: string, name: string) {
-  await db.insert(retailers).values({ code, name }).onConflictDoNothing({ target: [retailers.tenantId, retailers.code] });
+  await db
+    .insert(retailers)
+    .values({ code, name })
+    .onConflictDoNothing({ target: [retailers.tenantId, retailers.code] });
   const [r] = await db.select({ id: retailers.id }).from(retailers).where(eq(retailers.code, code));
   return r.id;
 }
@@ -83,13 +86,7 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
     const [already] = await tx
       .select({ id: salesRecords.id })
       .from(salesRecords)
-      .where(
-        and(
-          eq(salesRecords.retailerId, retailerId),
-          eq(salesRecords.orderId, o.orderNumber),
-          sql`${salesRecords.orderNumber} <> ${o.orderNumber}`,
-        ),
-      )
+      .where(and(eq(salesRecords.retailerId, retailerId), eq(salesRecords.orderId, o.orderNumber), sql`${salesRecords.orderNumber} <> ${o.orderNumber}`))
       .limit(1);
     if (already) return true;
   }
@@ -202,13 +199,7 @@ export async function orderToSales(tx: Tx, provider: string, retailerId: string,
   if (provider === 'CENCOSUD' && o.orderNumber && subs.length) {
     await tx
       .delete(salesRecords)
-      .where(
-        and(
-          eq(salesRecords.retailerId, retailerId),
-          sql`${salesRecords.raw}->>'__origen' = ${API_ORIGIN}`,
-          eq(salesRecords.orderNumber, o.orderNumber),
-        ),
-      );
+      .where(and(eq(salesRecords.retailerId, retailerId), sql`${salesRecords.raw}->>'__origen' = ${API_ORIGIN}`, eq(salesRecords.orderNumber, o.orderNumber)));
   }
   return true;
 }

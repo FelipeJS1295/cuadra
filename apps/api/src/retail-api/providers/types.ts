@@ -175,6 +175,11 @@ export interface RetailProvider {
    * "pack": si el retailer exige marcar la orden como empacada antes (Falabella), hacerlo.
    */
   labels?(cfg: ProviderConfig, orders: LabelOrder[], opts: { pack: boolean }): Promise<LabelResult>;
+  /**
+   * Acepta órdenes nuevas en el retailer (Walmart: "acknowledge"): avisa que las vas a despachar.
+   * Devuelve cada orden como quedó (con su nuevo estado) para actualizar Ventas.
+   */
+  acceptOrders?(cfg: ProviderConfig, orders: LabelOrder[]): Promise<AcceptResult>;
 }
 
 export interface LabelOrder {
@@ -184,6 +189,10 @@ export interface LabelOrder {
   externalId: string | null;
   /** Orden completa como la entregó la API (trae seguimiento, envío…) */
   raw: Record<string, unknown> | null;
+}
+export interface AcceptResult {
+  accepted: { orderNumber: string; order: NormalizedOrder | null }[];
+  problems: { orderNumber: string; message: string }[];
 }
 export interface LabelResult {
   files: { orderNumber: string; pdf: Buffer }[];

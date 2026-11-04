@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   CalendarClock,
+  CircleCheckBig,
   CloudUpload,
   FileText,
   PackageCheck,
@@ -29,6 +30,7 @@ import { FacturaLote } from '@/components/factura-lote';
 import { ParisPickups } from '@/components/paris-logistics';
 import { RetailLabels } from '@/components/retail-labels';
 import { DeletedSales, DeleteSales } from '@/components/delete-sales';
+import { AcceptOrders, canAccept } from '@/components/accept-orders';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -221,10 +223,12 @@ function Sales() {
   const [pickups, setPickups] = useState(false);
   const [labels, setLabels] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const [deletedList, setDeletedList] = useState(false);
   // Envíame (Paris): retiros y etiquetas
   const enviame = useQuery({ queryKey: ['enviame-status'], queryFn: api.enviameStatus, staleTime: 300_000 });
   const labelProviders = useQuery({ queryKey: ['label-providers'], queryFn: api.labelProviders, staleTime: 300_000 });
+  const acceptProviders = useQuery({ queryKey: ['accept-providers'], queryFn: api.acceptProviders, staleTime: 300_000 });
   const [detail, setDetail] = useState<SaleRow | null>(null);
   const [bulk, setBulk] = useState<{ kind: BulkKind; sales: SaleRow[] } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -312,6 +316,7 @@ function Sales() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sales'] }),
   });
   const chosen = everything.filter((s) => selected.has(s.key));
+  const toAccept = chosen.filter((s) => canAccept(s, acceptProviders.data?.map((p) => p.code) ?? []));
   const allShown = rows.length > 0 && rows.every((s) => selected.has(s.key));
   const toggle = (key: string) =>
     setSelected((x) => {
@@ -678,6 +683,15 @@ function Sales() {
           }}
         />
       )}
+      {accepting && (
+        <AcceptOrders
+          sales={toAccept}
+          onClose={() => {
+            setAccepting(false);
+            setSelected(new Set());
+          }}
+        />
+      )}
       {deleting && (
         <DeleteSales
           sales={chosen}
@@ -738,6 +752,16 @@ function Sales() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FileText className="size-4" /> Una factura ({chosen.length})
+                </button>
+              )}
+              {/* Aceptar en el retailer las órdenes nuevas (Walmart) */}
+              {canEdit && toAccept.length > 0 && (
+                <button
+                  onClick={() => setAccepting(true)}
+                  title={toAccept.length < chosen.length ? 'Solo las órdenes nuevas de Walmart; el resto no se toca' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-money-500/90 px-3 py-1.5 font-medium hover:bg-money-500"
+                >
+                  <CircleCheckBig className="size-4" /> Aceptar ({new Set(toAccept.map((s) => s.orderNumber)).size})
                 </button>
               )}
               {/* Etiquetas de despacho desde la API de cada retailer */}

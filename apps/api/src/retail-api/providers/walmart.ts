@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { arr, dayOf, dayRange, findDeep, http, httpFile, isPdf, num, pick, str, toDate } from './util.js';
 import {
   ProviderError,
+  type AcceptResult,
   type LabelOrder,
   type LabelResult,
   type NormalizedItem,
@@ -66,6 +67,17 @@ async function put(cfg: ProviderConfig, path: string, body: unknown) {
   return (json ?? {}) as Record<string, unknown>;
 }
 
+async function post(cfg: ProviderConfig, path: string, body?: unknown) {
+  const t = await token(cfg);
+  const { json } = await http(`${base(cfg)}${path}`, {
+    method: 'POST',
+    headers: { ...headers(cfg), 'WM_SEC.ACCESS_TOKEN': t, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    timeoutMs: 60000,
+  });
+  return (json ?? {}) as Record<string, unknown>;
+}
+
 async function get(cfg: ProviderConfig, path: string) {
   const t = await token(cfg);
   const { json } = await http(`${base(cfg)}${path}`, { headers: { ...headers(cfg), 'WM_SEC.ACCESS_TOKEN': t }, timeoutMs: 90000 });
@@ -109,6 +121,61 @@ async function labels(cfg: ProviderConfig, orders: LabelOrder[]): Promise<LabelR
         if (!isPdf(data)) throw new ProviderError(`Walmart no entregó un PDF para la guía ${tn}`);
         out.files.push({ orderNumber: o.orderNumber, pdf: data });
       }
+    } catch (err) {
+      out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message });
+    }
+  }
+  return out;
+}
+
+/** Estados de línea que ya no se pueden aceptar (despachada, entregada, cancelada…) */
+const CLOSED = /ship|deliver|cancel|refund|return/i;
+const lineStatuses = (l: unknown) => arr(pick(l, 'orderLineStatuses.orderLineStatus')).map((s) => String(pick(s, 'status') ?? ''));
+
+/**
+ * Acepta órdenes nuevas ("Created" -> "Acknowledged"): POST /v3/orders/{PO}/acknowledge.
+ * Si el mercado no acepta esa ruta, usa /acknowledgeLines con cada línea pendiente y su cantidad.
+ * Luego lee la orden de nuevo para guardar su estado real.
+ */
+async function acceptOrders(cfg: ProviderConfig, orders: LabelOrder[]): Promise<AcceptResult> {
+  const out: AcceptResult = { accepted: [], problems: [] };
+  for (const o of orders) {
+    const po = o.externalId ?? o.orderNumber;
+    try {
+      const lines = arr(pick(o.raw, 'orderLines.orderLine'));
+      const statuses = lines.flatMap(lineStatuses);
+      if (lines.length && statuses.length && statuses.every((st) => CLOSED.test(st))) {
+        throw new ProviderError(`Ya no se puede aceptar: está ${statuses.join(', ')}`);
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = await post(cfg, `/v3/orders/${encodeURIComponent(po)}/acknowledge`);
+      } catch (err) {
+        const status = err instanceof ProviderError ? (err.status ?? 0) : 0;
+        if (!(status === 400 || status === 404 || status === 405) || !lines.length) throw err;
+        const pending = lines.filter((l) => !lineStatuses(l).some((st) => CLOSED.test(st)));
+        body = await post(cfg, `/v3/orders/${encodeURIComponent(po)}/acknowledgeLines`, {
+          orderAcknowledgement: {
+            orderLines: {
+              orderLine: pending.map((l) => ({
+                lineNumber: String(pick(l, 'lineNumber')),
+                orderLineStatuses: {
+                  orderLineStatus: [
+                    {
+                      status: 'Acknowledged',
+                      statusQuantity: { unitOfMeasurement: 'EACH', amount: String(num(pick(l, 'orderLineQuantity.amount')) ?? 1) },
+                    },
+                  ],
+                },
+              })),
+            },
+          },
+        });
+      }
+      // La respuesta trae la orden actualizada; si no, se vuelve a pedir
+      let order = (pick(body, 'order') ?? (pick(body, 'purchaseOrderId') ? body : null)) as Record<string, unknown> | null;
+      if (!order) order = (pick(await get(cfg, `/v3/orders/${encodeURIComponent(po)}`).catch(() => ({})), 'order') as Record<string, unknown> | null) ?? null;
+      out.accepted.push({ orderNumber: o.orderNumber, order: order ? normalizeOrder(order) : null });
     } catch (err) {
       out.problems.push({ orderNumber: o.orderNumber, message: (err as Error).message });
     }
@@ -188,6 +255,7 @@ function normalizeOrder(o: Record<string, unknown>): NormalizedOrder {
 
 export const walmart: RetailProvider = {
   labels,
+  acceptOrders,
   code: 'WALMART',
   label: 'Walmart',
   howTo:
