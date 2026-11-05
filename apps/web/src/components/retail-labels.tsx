@@ -24,10 +24,13 @@ export function RetailLabels({ sales, onClose }: { sales: SaleRow[]; onClose: ()
       .filter((o) => !seen.has(`${o.retailerCode}|${o.orderNumber}`) && seen.add(`${o.retailerCode}|${o.orderNumber}`));
   }, [sales]);
   const supported = new Set((providers.data ?? []).map((p) => p.code));
-  const ok = orders.filter((o) => supported.has(o.retailerCode));
-  const other = orders.filter((o) => !supported.has(o.retailerCode));
+  // Ventas de un cliente de Cuadra: la etiqueta se pide con la conexión del cliente
+  const fromClient = (o: { retailerCode: string }) => o.retailerCode.startsWith('CLI-');
+  const ok = orders.filter((o) => supported.has(o.retailerCode) || fromClient(o));
+  const other = orders.filter((o) => !supported.has(o.retailerCode) && !fromClient(o));
   const byRetailer = (list: typeof orders) =>
     Object.entries(list.reduce<Record<string, number>>((m, o) => ({ ...m, [o.retailer]: (m[o.retailer] ?? 0) + 1 }), {}));
+  const clients = byRetailer(ok.filter(fromClient));
 
   const run = useMutation({
     mutationFn: () =>
@@ -110,6 +113,12 @@ export function RetailLabels({ sales, onClose }: { sales: SaleRow[]; onClose: ()
             </p>
           ) : (
             <p className="text-muted">Ninguna de las ventas elegidas es de un retailer que entregue etiquetas por API.</p>
+          )}
+          {clients.length > 0 && (
+            <p className="text-xs text-muted">
+              {clients.map(([r]) => r).join(', ')}: son ventas que te envió un cliente de Cuadra. La etiqueta se saca con la conexión de ese cliente con el
+              retailer, igual que si la imprimiera él.
+            </p>
           )}
           {other.length > 0 && (
             <p className="text-xs text-muted">

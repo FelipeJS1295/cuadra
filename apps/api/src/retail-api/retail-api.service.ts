@@ -15,6 +15,8 @@ import {
   retailSkuNames,
   salesRecords,
   settlementRecords,
+  suppliers,
+  tenants,
 } from '../database/schema/index.js';
 import { PROVIDERS, providerByCode } from './providers/index.js';
 import {
@@ -441,6 +443,13 @@ export class RetailApiService {
     for (const o of orders) byProvider.set(o.retailerCode, [...(byProvider.get(o.retailerCode) ?? []), o.orderNumber]);
 
     for (const [code, nums] of byProvider) {
+      // Ventas que envió un cliente de Cuadra: la etiqueta se pide con la conexión del cliente
+      if (code.startsWith('CLI-')) {
+        const r = await this.clientLabels(code, nums, pack);
+        for (const [n, pdf] of r.files) files.set(`${code}|${n}`, [pdf]);
+        problems.push(...r.problems);
+        continue;
+      }
       const p = providerByCode(code);
       const r = p?.labels ? await this.row(p.code) : null;
       if (!p?.labels || !r?.enabled) {
@@ -493,6 +502,80 @@ export class RetailApiService {
     }
     if (!count) throw new BadRequestException(problems.map((x) => `${x.retailer} ${x.orderNumber}: ${x.message}`).join(' · ') || 'No hay etiquetas');
     return { pdf: Buffer.from(await out.save()), count, problems };
+  }
+
+  /**
+   * Etiquetas de ventas recibidas de un cliente de Cuadra (canal "CLI-…"). Cada línea guarda la
+   * línea original del cliente ("CQ|<id>"): en la cuenta del cliente se busca su orden en el
+   * retailer y se pide la etiqueta con la conexión del cliente. Solo se puede si el cliente tiene
+   * a esta empresa como proveedor y le envió esa venta.
+   */
+  private async clientLabels(code: string, nums: string[], pack: boolean) {
+    const files = new Map<string, Buffer>();
+    const problems: { retailer: string; orderNumber: string; message: string }[] = [];
+    const { rows } = await this.db.execute<{ order_number: string; item: string; sender: string | null; client: string; retailer: string | null }>(sql`
+      select s.order_number, s.external_item_id as item, s.raw->>'from' as sender, r.name as client, s.raw->>'retailer' as retailer
+      from sales_records s
+      join retailers r on r.id = s.retailer_id
+      where r.code = ${code} and s.order_number in ${nums} and s.external_item_id like 'CQ|%'
+    `);
+    const client = rows[0]?.client ?? 'Cliente';
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const n of nums) if (!rows.some((r) => r.order_number === n)) problems.push({ retailer: client, orderNumber: n, message: 'No se encontró la venta' });
+
+    const [me] = await this.base.select({ taxId: tenants.taxId }).from(tenants).where(eq(tenants.id, currentTenantId()!));
+    const norm = (r: string | null | undefined) => (r ?? '').replace(/[.\s]/g, '').toUpperCase();
+    const bySender = new Map<string, typeof rows>();
+    for (const r of rows) if (r.sender && UUID.test(r.sender)) bySender.set(r.sender, [...(bySender.get(r.sender) ?? []), r]);
+
+    for (const [sender, list] of bySender) {
+      const numbers = [...new Set(list.map((r) => r.order_number))];
+      const fail = (message: string) => numbers.forEach((n) => problems.push({ retailer: client, orderNumber: n, message }));
+      try {
+        await runInBackground(this.base, sender, async () => {
+          // El cliente debe tenernos como proveedor (por RUT)
+          const sups = await this.db.select({ taxId: suppliers.taxId }).from(suppliers);
+          if (!me?.taxId || !sups.some((x) => norm(x.taxId) === norm(me.taxId))) {
+            fail(`${client} ya no te tiene como proveedor en Cuadra: pídele que saque la etiqueta`);
+            return;
+          }
+          const lineIds = list.map((r) => r.item.slice(3)).filter((id) => UUID.test(id));
+          const { rows: orig } = lineIds.length
+            ? await this.db.execute<{ id: string; code: string; order_number: string }>(sql`
+                select s.id, r.code, s.order_number from sales_records s join retailers r on r.id = s.retailer_id
+                where s.id in ${lineIds} and s.sent_to_supplier_at is not null
+              `)
+            : { rows: [] };
+          for (const n of numbers) {
+            const ids = new Set(list.filter((r) => r.order_number === n).map((r) => r.item.slice(3)));
+            const theirs = [
+              ...new Map(
+                orig.filter((o) => ids.has(o.id)).map((o) => [`${o.code}|${o.order_number}`, { retailerCode: o.code, orderNumber: o.order_number }]),
+              ).values(),
+            ];
+            if (!theirs.length) {
+              problems.push({ retailer: client, orderNumber: n, message: `${client} ya no tiene esta venta en Cuadra` });
+              continue;
+            }
+            try {
+              const r = await this.labels(theirs, pack);
+              files.set(n, r.pdf);
+              for (const x of r.problems) problems.push({ retailer: `${client} · ${x.retailer}`, orderNumber: n, message: x.message });
+            } catch (e) {
+              problems.push({
+                retailer: `${client} · ${list.find((r) => r.order_number === n)?.retailer ?? ''}`.replace(/ · $/, ''),
+                orderNumber: n,
+                // Viene como "Paris 123: motivo · …": se deja solo el motivo
+                message: (e as Error).message.replace(/(^|· )[^:·]+?: /g, '$1'),
+              });
+            }
+          }
+        });
+      } catch (e) {
+        fail((e as Error).message);
+      }
+    }
+    return { files, problems };
   }
 
   // ------------------------------------------------------------------ Envíame (Paris): retiros y etiquetas
