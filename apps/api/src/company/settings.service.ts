@@ -24,6 +24,8 @@ export interface SiiSettings {
   /** Código de sucursal en eBoleta (opcional: si no, se consulta) */
   sucursal?: string;
   apigatewayUrl?: string;
+  /** API Gateway + "SII directo": boletas, compras y cuadratura van directo al SII con la clave (API Gateway queda de respaldo) */
+  directo?: boolean;
 }
 
 /** Configuración de la empresa actual (datos y claves cifradas) */
@@ -61,6 +63,7 @@ export class SettingsService {
       emisorName: t?.legalName ?? t?.name ?? null,
       usuarioRut: siiRut(data.usuarioRut),
       sucursal: data.sucursal ?? null,
+      directo: data.directo === true,
       apigatewayUrl: (data.apigatewayUrl || 'https://app.apigateway.cl/api/v2').replace(/\/+$/, ''),
       token: secrets.apigatewayToken ?? null,
       clave: secrets.siiClave ?? null,
@@ -123,6 +126,7 @@ export class SettingsService {
       emisorRut: s.emisorRut,
       usuarioRut: s.usuarioRut,
       sucursal: s.sucursal,
+      directo: s.directo,
       apigatewayUrl: s.apigatewayUrl,
       token: mask(s.token ?? undefined),
       clave: s.clave ? '••••••' : null,
@@ -135,6 +139,7 @@ export class SettingsService {
     provider?: SiiProviderKind | null;
     usuarioRut?: string | null;
     sucursal?: string | null;
+    directo?: boolean | null;
     apigatewayUrl?: string | null;
     token?: string | null;
     clave?: string | null;
@@ -151,6 +156,7 @@ export class SettingsService {
     const sii = { ...((data.sii ?? {}) as SiiSettings) };
     if (input.usuarioRut !== undefined) sii.usuarioRut = siiRut(input.usuarioRut) ?? undefined;
     if (input.sucursal !== undefined) sii.sucursal = input.sucursal || undefined;
+    if (input.directo !== undefined && input.directo !== null) sii.directo = input.directo;
     if (input.apigatewayUrl !== undefined) sii.apigatewayUrl = input.apigatewayUrl || undefined;
     if (input.provider) sii.provider = input.provider;
     if (input.nuboxUrl !== undefined) sii.nuboxUrl = input.nuboxUrl || undefined;

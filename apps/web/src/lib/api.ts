@@ -716,6 +716,8 @@ export interface SiiConfig {
   emisorRut: string | null;
   usuarioRut: string | null;
   sucursal: string | null;
+  /** API Gateway + boletas, compras y cuadratura directo con el SII */
+  directo: boolean;
   apigatewayUrl: string;
   token: string | null;
   clave: string | null;
@@ -1495,6 +1497,7 @@ export const api = {
     provider?: SiiProvider;
     usuarioRut?: string;
     sucursal?: string;
+    directo?: boolean;
     apigatewayUrl?: string;
     token?: string;
     clave?: string;

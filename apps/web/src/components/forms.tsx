@@ -36,7 +36,13 @@ export function CompanyForm({ onSaved }: { onSaved?: () => void }) {
           <input value={f.taxId} onChange={(e) => setF({ ...f, taxId: e.target.value })} placeholder="76.123.456-7" disabled={!isAdmin} className={inputCls} />
         </Field>
         <Field label="Razón social" className="sm:col-span-2">
-          <input value={f.legalName} onChange={(e) => setF({ ...f, legalName: e.target.value })} placeholder="Muebles del Sur SpA" disabled={!isAdmin} className={inputCls} />
+          <input
+            value={f.legalName}
+            onChange={(e) => setF({ ...f, legalName: e.target.value })}
+            placeholder="Muebles del Sur SpA"
+            disabled={!isAdmin}
+            className={inputCls}
+          />
         </Field>
       </div>
       <ErrorBox error={save.error} />
@@ -206,6 +212,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
   const { isAdmin, canEdit } = useSession();
   const cfg = useQuery({ queryKey: ['sii-config'], queryFn: api.siiConfig });
   const [provider, setProvider] = useState<SiiProvider>('APIGATEWAY');
+  const [directo, setDirecto] = useState(false);
   const [f, setF] = useState<SiiFields>({
     usuarioRut: '',
     sucursal: '',
@@ -222,6 +229,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
   useEffect(() => {
     if (!cfg.data) return;
     setProvider(cfg.data.provider);
+    setDirecto(cfg.data.directo);
     setF((x) => ({
       ...x,
       usuarioRut: cfg.data.usuarioRut ?? '',
@@ -238,6 +246,7 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
         provider,
         usuarioRut: f.usuarioRut,
         ...(provider === 'APIGATEWAY' || provider === 'NUBOX_CLASICO' ? { sucursal: f.sucursal } : {}),
+        ...(provider === 'APIGATEWAY' ? { directo } : {}),
         ...(provider === 'NUBOX' ? { nuboxUrl: f.nuboxUrl } : {}),
         ...(provider === 'NUBOX_CLASICO' ? { nuboxUser: f.nuboxUser, nuboxSerie: f.nuboxSerie } : {}),
         ...secret('nuboxPassword'),
@@ -362,7 +371,9 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
         </a>
       </div>
 
-      {!c.emisorRut && provider !== 'NUBOX' && <p className="rounded-xl bg-sun-50 p-3 text-sm text-sun-700">Primero completa el RUT de la empresa en “Empresa”.</p>}
+      {!c.emisorRut && provider !== 'NUBOX' && (
+        <p className="rounded-xl bg-sun-50 p-3 text-sm text-sun-700">Primero completa el RUT de la empresa en “Empresa”.</p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         {provider === 'APIGATEWAY' && (
@@ -381,7 +392,14 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
               <input value={f.nuboxUser} onChange={set('nuboxUser')} disabled={!isAdmin} className={inputCls} />
             </Field>
             <Field label="Contraseña del usuario API" hint={c.nuboxPassword ? 'Guardada · escribe para cambiarla' : 'Se guarda cifrada'}>
-              <input type="password" autoComplete="new-password" value={f.nuboxPassword} onChange={set('nuboxPassword')} disabled={!isAdmin} className={inputCls} />
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={f.nuboxPassword}
+                onChange={set('nuboxPassword')}
+                disabled={!isAdmin}
+                className={inputCls}
+              />
             </Field>
             <Field label="Tu RUT (el funcionario que emite en Nubox)">
               <input value={f.usuarioRut} onChange={set('usuarioRut')} placeholder="12.345.678-9" disabled={!isAdmin} className={inputCls} />
@@ -394,7 +412,11 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
             </Field>
             <Field
               label="Tu clave del SII (opcional)"
-              hint={c.clave ? 'Guardada · escribe para cambiarla' : 'Con tu RUT de arriba y esta clave, Cuadra trae las compras y compara las ventas directo del SII'}
+              hint={
+                c.clave
+                  ? 'Guardada · escribe para cambiarla'
+                  : 'Con tu RUT de arriba y esta clave, Cuadra trae las compras y compara las ventas directo del SII'
+              }
             >
               <input type="password" autoComplete="new-password" value={f.clave} onChange={set('clave')} disabled={!isAdmin} className={inputCls} />
             </Field>
@@ -414,6 +436,24 @@ export function SiiForm({ onSaved }: { onSaved?: () => void }) {
           <Field label="Código de sucursal (opcional)" hint="Si lo dejas vacío, lo buscamos en el SII">
             <input value={f.sucursal} onChange={set('sucursal')} disabled={!isAdmin} className={inputCls} />
           </Field>
+        )}
+        {provider === 'APIGATEWAY' && (
+          <label className="flex items-start gap-3 rounded-xl border border-line bg-[#fafbfc] px-4 py-3 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={directo}
+              onChange={(e) => setDirecto(e.target.checked)}
+              disabled={!isAdmin}
+              className="mt-1 size-4 accent-brand-600"
+            />
+            <span>
+              <b>SII directo (en prueba)</b>
+              <span className="mt-0.5 block text-xs text-muted">
+                Las boletas, las facturas de proveedores y la cuadratura se hacen directo en el SII con tu RUT y clave, sin gastar consultas de API Gateway. Si
+                el SII no responde antes de emitir, la boleta sale por API Gateway. Facturas, guías y notas de crédito siguen por API Gateway.
+              </span>
+            </span>
+          </label>
         )}
         {provider === 'NUBOX' && (
           <>

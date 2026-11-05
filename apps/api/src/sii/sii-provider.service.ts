@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SettingsService } from '../company/settings.service.js';
-import { ApiGatewayClient, type EboletaInput } from './api-gateway.client.js';
+import { ApiGatewayClient, SiiRejectedError, type EboletaInput } from './api-gateway.client.js';
 import { NuboxClassicClient } from './providers/nubox-classic.client.js';
 import { NuboxClient } from './providers/nubox.client.js';
+import { EboletaDirectClient } from './providers/eboleta-direct.client.js';
 import { SiiPortalClient } from './providers/sii-portal.client.js';
 import { SimpleApiClient } from './providers/simpleapi.client.js';
 import { CAPABILITIES, PROVIDER_NAMES, type IssuedDoc, type SalesSummaryRow, type SiiCapabilities, type SiiProviderKind } from './providers/types.js';
@@ -37,9 +38,7 @@ export interface CreditNoteRequest {
 }
 
 /** Nota de crédito creada: borrador en el portal del SII (API Gateway) o ya emitida (Nubox) */
-export type CreditNoteResult =
-  | { kind: 'BORRADOR'; draftCode: string; raw: unknown }
-  | { kind: 'EMITIDA'; folio: number; raw: unknown };
+export type CreditNoteResult = { kind: 'BORRADOR'; draftCode: string; raw: unknown } | { kind: 'EMITIDA'; folio: number; raw: unknown };
 
 /**
  * Conexión con el SII de la empresa actual, sea cual sea su proveedor
@@ -48,6 +47,7 @@ export type CreditNoteResult =
  */
 @Injectable()
 export class SiiProviderService {
+  private readonly logger = new Logger(SiiProviderService.name);
   constructor(
     private readonly settings: SettingsService,
     private readonly gateway: ApiGatewayClient,
@@ -55,6 +55,7 @@ export class SiiProviderService {
     private readonly nubox: NuboxClient,
     private readonly nuboxClassic: NuboxClassicClient,
     private readonly portal: SiiPortalClient,
+    private readonly eboleta: EboletaDirectClient,
   ) {}
 
   /**
@@ -69,10 +70,15 @@ export class SiiProviderService {
     return base;
   }
 
-  /** Compras y cuadratura van directo al SII (Nubox + clave del SII) */
+  /** API Gateway con "SII directo": boletas, compras y cuadratura sin pasar por API Gateway */
+  private static directo(s: Awaited<ReturnType<SettingsService['sii']>>) {
+    return s.provider === 'APIGATEWAY' && s.directo && SiiPortalClient.ready(s);
+  }
+
+  /** Compras y cuadratura van directo al SII (Nubox o API Gateway en modo directo + clave del SII) */
   private async direct() {
     const s = await this.settings.sii();
-    return (s.provider === 'NUBOX' || s.provider === 'NUBOX_CLASICO') && SiiPortalClient.ready(s);
+    return ((s.provider === 'NUBOX' || s.provider === 'NUBOX_CLASICO') && SiiPortalClient.ready(s)) || SiiProviderService.directo(s);
   }
 
   async status() {
@@ -90,7 +96,7 @@ export class SiiProviderService {
       /** Lo que permite el proveedor elegido (para explicarlo en pantalla) */
       supports: this.capabilities(s),
       /** Compras y cuadratura se leen directo del SII con la clave tributaria */
-      siiDirect: (s.provider === 'NUBOX' || s.provider === 'NUBOX_CLASICO') && SiiPortalClient.ready(s),
+      siiDirect: ((s.provider === 'NUBOX' || s.provider === 'NUBOX_CLASICO') && SiiPortalClient.ready(s)) || SiiProviderService.directo(s),
     };
   }
 
@@ -102,9 +108,7 @@ export class SiiProviderService {
         throw new BadRequestException(`Para ${what} con ${PROVIDER_NAMES[s.provider]}, agrega tu RUT y tu clave del SII en Configuración → SII`);
       }
       const who = (Object.keys(CAPABILITIES) as SiiProviderKind[]).filter((k) => CAPABILITIES[k][cap]).map((k) => PROVIDER_NAMES[k]);
-      throw new BadRequestException(
-        `Con ${PROVIDER_NAMES[s.provider]} no puedes ${what}. Eso se hace con ${who.join(' o ')} (Configuración → SII)`,
-      );
+      throw new BadRequestException(`Con ${PROVIDER_NAMES[s.provider]} no puedes ${what}. Eso se hace con ${who.join(' o ')} (Configuración → SII)`);
     }
     return s.provider;
   }
@@ -133,6 +137,19 @@ export class SiiProviderService {
         item: input.item,
         total: input.total,
       });
+    }
+    if (SiiProviderService.directo(await this.settings.sii())) {
+      try {
+        return await this.eboleta.emitirBoleta(input);
+      } catch (err) {
+        // Falló ANTES de enviar la boleta (entrar al SII, datos de la empresa…): se emite por API Gateway.
+        // Si no se sabe si se emitió (SiiUnknownError) o el SII la rechazó, no se reintenta.
+        if (err instanceof SiiRejectedError && !/rechaz/i.test(err.message)) {
+          this.logger.warn(`SII directo no disponible (${err.message}): boleta por API Gateway`);
+          return this.gateway.emitirBoleta(input);
+        }
+        throw err;
+      }
     }
     return this.gateway.emitirBoleta(input);
   }
@@ -280,6 +297,11 @@ export class SiiProviderService {
         // También prueba la entrada directa al SII (compras y cuadratura)
         const sii = await this.portal.test().catch((err: Error) => `No pudimos entrar al SII con tu RUT y clave: ${err.message}`);
         return { ok: true, message: `${nubox} ${sii}` };
+      }
+      if (SiiProviderService.directo(s)) {
+        const boleta = await this.eboleta.test().catch((err: Error) => `No pudimos entrar a Boleta electrónica con tu RUT y clave: ${err.message}.`);
+        const rcv = await this.portal.test().catch((err: Error) => `No pudimos entrar al SII para compras y cuadratura: ${err.message}`);
+        return { ok: !/^No pudimos/.test(boleta), message: `${boleta} ${rcv} API Gateway queda de respaldo.` };
       }
       const data = await this.gateway.emisor(true);
       const cfg = await this.gateway.config();

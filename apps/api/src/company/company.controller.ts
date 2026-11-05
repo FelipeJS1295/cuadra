@@ -66,6 +66,7 @@ export class CompanyController {
         provider: z.enum(SII_PROVIDERS).nullish(),
         usuarioRut: optional(12),
         sucursal: optional(20),
+        directo: z.boolean().nullish(),
         apigatewayUrl: optional(200),
         token: optional(500),
         clave: optional(100),
