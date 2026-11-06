@@ -85,6 +85,22 @@ export class SalesController {
     return this.sales.deleteReceipt(id);
   }
 
+  /** Cambia el estado de órdenes cargadas por archivo (Hites, etc.). ADMIN y OPERADOR, por la regla general */
+  @Post('status')
+  setStatus(@Body() body: unknown, @CurrentUser() user: SessionUser) {
+    const { orders, state } = validate(
+      z.object({
+        orders: z
+          .array(z.object({ retailerCode: z.string().min(1).max(40), orderNumber: z.string().min(1).max(80) }), { error: 'Faltan las órdenes' })
+          .min(1, 'Elige al menos una venta')
+          .max(500, 'Máximo 500 ventas a la vez'),
+        state: z.enum(['PENDIENTE', 'EN_PREPARACION', 'EN_CAMINO', 'ENTREGADA', 'DEVUELTA', 'FALLIDA', 'CANCELADA'], { error: 'Elige el estado' }),
+      }),
+      body,
+    );
+    return this.sales.setStatus(orders, state, { id: user?.id ?? null, name: user?.name ?? user?.email ?? null });
+  }
+
   /** Elimina órdenes de Ventas. Solo el dueño de la empresa (con @Roles('DUENO') el AuthGuard rechaza a los demás) */
   @Post('delete')
   @Roles('DUENO')

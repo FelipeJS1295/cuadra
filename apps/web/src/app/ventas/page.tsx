@@ -9,6 +9,7 @@ import {
   CircleCheckBig,
   CloudUpload,
   FileText,
+  ListChecks,
   PackageCheck,
   Printer,
   RefreshCw,
@@ -31,6 +32,7 @@ import { ParisPickups } from '@/components/paris-logistics';
 import { RetailLabels } from '@/components/retail-labels';
 import { DeletedSales, DeleteSales } from '@/components/delete-sales';
 import { AcceptOrders, canAccept } from '@/components/accept-orders';
+import { ChangeStatus, canChangeStatus } from '@/components/change-status';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -224,6 +226,7 @@ function Sales() {
   const [labels, setLabels] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  const [changing, setChanging] = useState(false);
   const [deletedList, setDeletedList] = useState(false);
   // Envíame (Paris): retiros y etiquetas
   const enviame = useQuery({ queryKey: ['enviame-status'], queryFn: api.enviameStatus, staleTime: 300_000 });
@@ -316,6 +319,7 @@ function Sales() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sales'] }),
   });
   const chosen = everything.filter((s) => selected.has(s.key));
+  const toChange = chosen.filter(canChangeStatus);
   const toAccept = chosen.filter((s) => canAccept(s, acceptProviders.data?.map((p) => p.code) ?? []));
   const allShown = rows.length > 0 && rows.every((s) => selected.has(s.key));
   const toggle = (key: string) =>
@@ -683,6 +687,15 @@ function Sales() {
           }}
         />
       )}
+      {changing && (
+        <ChangeStatus
+          sales={toChange}
+          onClose={() => {
+            setChanging(false);
+            setSelected(new Set());
+          }}
+        />
+      )}
       {accepting && (
         <AcceptOrders
           sales={toAccept}
@@ -752,6 +765,16 @@ function Sales() {
                   className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FileText className="size-4" /> Una factura ({chosen.length})
+                </button>
+              )}
+              {/* Estado a mano para ventas cargadas por archivo (Hites…) */}
+              {canEdit && toChange.length > 0 && (
+                <button
+                  onClick={() => setChanging(true)}
+                  title={toChange.length < chosen.length ? 'Solo las ventas cargadas por archivo; las que vienen por API se actualizan solas' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20"
+                >
+                  <ListChecks className="size-4" /> Cambiar estado ({new Set(toChange.map((s) => `${s.retailerCode}|${s.orderNumber}`)).size})
                 </button>
               )}
               {/* Aceptar en el retailer las órdenes nuevas (Walmart) */}

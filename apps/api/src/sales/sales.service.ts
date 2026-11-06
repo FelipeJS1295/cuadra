@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { CANCELLED_PATTERN, orderStateOf, orderStateOfLines, PRICING_CHANNELS, type OrderState } from '@cuadra/shared';
+import { CANCELLED_PATTERN, ORDER_STATE_INFO, orderStateOf, orderStateOfLines, PRICING_CHANNELS, type OrderState } from '@cuadra/shared';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE, type Database } from '../database/database.module.js';
 import { creditNotes, customerReceipts, deletedSales, retailApiOrders, retailers, salesRecords, settlementRecords } from '../database/schema/index.js';
@@ -644,6 +644,65 @@ export class SalesService {
    * volver a traerla. No se elimina si tiene una boleta emitida en el SII o una nota de crédito
    * (son documentos tributarios: primero hay que anularlos).
    */
+  /**
+   * Cambia a mano el estado de órdenes que NO vienen por API (Hites y canales que se cargan por archivo):
+   * el archivo no actualiza órdenes ya cargadas, así que el estado se lleva desde Cuadra.
+   * Las líneas de API o de un cliente de Cuadra se saltan: su estado lo trae la sincronización.
+   */
+  async setStatus(
+    orders: { retailerCode: string; orderNumber: string }[],
+    state: Exclude<OrderState, 'OTRO'>,
+    user: { id: string | null; name: string | null },
+  ) {
+    const label = ORDER_STATE_INFO[state].label;
+    const updated: string[] = [];
+    const skipped: { order: string; reason: string }[] = [];
+    for (const { retailerCode, orderNumber } of orders) {
+      const [r] = await this.db.select({ id: retailers.id, name: retailers.name }).from(retailers).where(eq(retailers.code, retailerCode));
+      if (!r) {
+        skipped.push({ order: `${retailerCode} ${orderNumber}`, reason: 'No se encontró el canal' });
+        continue;
+      }
+      const name = `${r.name} ${orderNumber}`;
+      const lines = await this.db
+        .select({ id: salesRecords.id, status: salesRecords.status, raw: salesRecords.raw })
+        .from(salesRecords)
+        .where(and(eq(salesRecords.retailerId, r.id), eq(salesRecords.orderNumber, orderNumber)));
+      if (!lines.length) {
+        skipped.push({ order: name, reason: 'La venta ya no existe' });
+        continue;
+      }
+      const origin = (l: (typeof lines)[number]) => String((l.raw as Record<string, unknown> | null)?.__origen ?? 'ARCHIVO');
+      const own = lines.filter((l) => origin(l) !== 'API' && origin(l) !== 'CUADRA');
+      if (!own.length) {
+        skipped.push({
+          order: name,
+          reason: lines.some((l) => origin(l) === 'API')
+            ? 'Viene por API: su estado se actualiza solo'
+            : 'Es de un cliente de Cuadra: su estado lo pone el cliente',
+        });
+        continue;
+      }
+      for (const l of own) {
+        const raw = (l.raw as Record<string, unknown> | null) ?? {};
+        await this.db
+          .update(salesRecords)
+          .set({
+            status: label,
+            raw: {
+              ...raw,
+              // El estado que traía el archivo queda guardado, y quién lo cambió y cuándo
+              __estadoArchivo: raw.__estadoArchivo ?? l.status ?? null,
+              __estadoManual: { estado: state, por: user.name, el: new Date().toISOString() },
+            },
+          })
+          .where(eq(salesRecords.id, l.id));
+      }
+      updated.push(name);
+    }
+    return { updated: updated.length, state, label, skipped };
+  }
+
   async deleteOrders(orders: { retailerCode: string; orderNumber: string }[], user: { id: string | null; name: string | null }) {
     const deleted: string[] = [];
     const skipped: { order: string; reason: string }[] = [];

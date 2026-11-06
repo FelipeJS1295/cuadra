@@ -52,6 +52,7 @@ const ACTIONS: Record<string, (p: P) => string> = {
   'POST /api/sales/receipts': () => 'Anotó una boleta',
   'DELETE /api/sales/receipts/:id': () => 'Borró una boleta anotada',
   'POST /api/sales/delete': () => 'Eliminó ventas',
+  'POST /api/sales/status': () => 'Cambió el estado de ventas',
   'DELETE /api/sales/deleted/:id': () => 'Permitió que vuelva una venta eliminada',
 
   'POST /api/sii/boletas': () => 'Emitió una boleta',

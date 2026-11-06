@@ -1667,6 +1667,12 @@ export const api = {
   // Etiquetas de despacho desde la API de cada retailer
   labelProviders: () => request<{ code: string; label: string }[]>('/retail-api/labels/providers'),
   /** Aceptar órdenes en el retailer (Walmart) */
+  /** Cambiar a mano el estado de ventas cargadas por archivo (Hites…) */
+  setSalesStatus: (orders: { retailerCode: string; orderNumber: string }[], state: string) =>
+    request<{ updated: number; state: string; label: string; skipped: { order: string; reason: string }[] }>('/sales/status', {
+      method: 'POST',
+      body: JSON.stringify({ orders, state }),
+    }),
   acceptProviders: () => request<{ code: string; label: string }[]>('/retail-api/accept/providers'),
   acceptOrders: (orders: { retailerCode: string; orderNumber: string }[]) =>
     request<{
