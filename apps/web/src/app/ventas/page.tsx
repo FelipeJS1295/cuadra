@@ -8,6 +8,7 @@ import {
   CalendarClock,
   CircleCheckBig,
   CloudUpload,
+  Download,
   FileText,
   ListChecks,
   PackageCheck,
@@ -33,6 +34,7 @@ import { RetailLabels } from '@/components/retail-labels';
 import { DeletedSales, DeleteSales } from '@/components/delete-sales';
 import { AcceptOrders, canAccept } from '@/components/accept-orders';
 import { ChangeStatus, canChangeStatus } from '@/components/change-status';
+import { NuboxFile } from '@/components/nubox-file';
 import { SendToSupplier } from '@/components/send-to-supplier';
 import { SyncDialog } from '@/components/sync-dialog';
 import { UploadDialog } from '@/components/upload';
@@ -222,6 +224,7 @@ function Sales() {
   const [board, setBoard] = useState(false);
   const [sending, setSending] = useState(false);
   const [facturing, setFacturing] = useState(false);
+  const [nuboxing, setNuboxing] = useState(false);
   const [pickups, setPickups] = useState(false);
   const [labels, setLabels] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -238,6 +241,17 @@ function Sales() {
   // Orden de la tabla: clic en el título de la columna (sin orden = como llega, más recientes primero)
   const [sort, setSort] = useState<{ by: SortKey; dir: 'asc' | 'desc' } | null>(null);
   const range = monthRange(month);
+  const exportSales = useMutation({
+    mutationFn: async (keys: string[]) => {
+      const file = await api.exportSales(keys, range);
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ventas-${month}.xlsx`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+  });
   const sales = useQuery({
     queryKey: ['sales', range.from, range.to],
     queryFn: () => api.listSales(range.from, range.to),
@@ -480,6 +494,7 @@ function Sales() {
       </div>
 
       <ErrorBox error={sales.error} />
+      <ErrorBox error={exportSales.error} />
       <Card>
         {sales.isLoading ? (
           <Loading />
@@ -715,6 +730,15 @@ function Sales() {
         />
       )}
       {deletedList && <DeletedSales onClose={() => setDeletedList(false)} />}
+      {nuboxing && (
+        <NuboxFile
+          sales={chosen}
+          onClose={() => {
+            setNuboxing(false);
+            setSelected(new Set());
+          }}
+        />
+      )}
       {facturing && (
         <FacturaLote
           sales={chosen}
@@ -750,6 +774,27 @@ function Sales() {
           onClear={() => setSelected(new Set())}
           extra={
             <>
+              <button
+                type="button"
+                onClick={() => exportSales.mutate(chosen.map((sale) => sale.key))}
+                disabled={exportSales.isPending}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20 disabled:opacity-40"
+              >
+                <Download className="size-4" />
+                {exportSales.isPending ? 'Preparando Excel…' : 'Descargar Excel'}
+              </button>
+              {/* Ventas de un cliente de Cuadra: archivo para importar la factura en Nubox */}
+              {chosen.length > 0 && chosen.every((s) => s.retailerCode.startsWith('CLI-')) && (
+                <button
+                  type="button"
+                  onClick={() => setNuboxing(true)}
+                  disabled={new Set(chosen.map((s) => s.retailerCode)).size > 1}
+                  title={new Set(chosen.map((s) => s.retailerCode)).size > 1 ? 'Elige ventas de un solo cliente' : 'Archivo para importar la factura en Nubox'}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 font-medium hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Download className="size-4" /> Archivo Nubox
+                </button>
+              )}
               {/* Ventas que envió un cliente de Cuadra: una sola factura para varias */}
               {chosen.length > 0 && chosen.every((s) => s.retailerCode.startsWith('CLI-')) && (
                 <button

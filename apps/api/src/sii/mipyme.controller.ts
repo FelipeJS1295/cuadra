@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query, Res, StreamableFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
 import { CurrentUser, type SessionUser } from '../auth/decorators.js';
@@ -26,6 +26,13 @@ const loteSchema = z.object({
   retailerCode: z.string().min(1).max(30),
   orderNumbers: z.array(z.string().min(1).max(50)).min(1, 'Elige al menos una venta').max(60, 'Máximo 60 ventas por factura'),
   receptor: facturaSchema.shape.receptor,
+});
+
+const nuboxSchema = loteSchema.extend({
+  orderNumbers: z.array(z.string().min(1).max(50)).min(1, 'Elige al menos una venta').max(500, 'Máximo 500 ventas por archivo'),
+  folio: z.coerce.number({ error: 'Falta el folio' }).int('El folio es un número entero').min(1, 'Falta el folio').max(99_999_999),
+  /** Una fecha para todas las facturas; sin fecha, cada factura lleva la de sus ventas */
+  fecha: dateSchema.nullish(),
 });
 
 const guideSchema = z.object({
@@ -109,6 +116,25 @@ export class MipymeController {
   createFacturaLote(@Body() body: unknown, @CurrentUser() user: SessionUser) {
     const input = validate(loteSchema, body);
     return this.mipyme.createFacturaLote(input.retailerCode, input.orderNumbers, input.receptor, user?.id ?? null);
+  }
+
+  /** Archivo Nubox: qué llevaría (hasta 500 ventas: se arma una factura por día y retail) */
+  @Post('facturas/lote/nubox/preview')
+  @HttpCode(200)
+  facturaLoteNuboxPreview(@Body() body: unknown) {
+    const input = validate(nuboxSchema.omit({ receptor: true, folio: true, fecha: true }), body);
+    return this.mipyme.facturaLotePreview(input.retailerCode, input.orderNumbers);
+  }
+
+  /** Las mismas líneas en el archivo de "Importar ventas electrónicas" de Nubox: una factura por día y retail (no emite nada) */
+  @Post('facturas/lote/nubox')
+  @HttpCode(200)
+  async facturaLoteNubox(@Body() body: unknown) {
+    const input = validate(nuboxSchema, body);
+    const { buffer, client } = await this.mipyme.facturaLoteNubox(input.retailerCode, input.orderNumbers, input.receptor, { folio: input.folio, fecha: input.fecha ?? null });
+    const stamp = input.fecha ?? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
+    const name = `nubox-facturas-${client.normalize('NFD').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'cliente'}-${stamp}.csv`;
+    return new StreamableFile(buffer, { type: 'text/csv; charset=windows-1252', disposition: `attachment; filename="${name}"` });
   }
 
   @Delete('facturas/:id')

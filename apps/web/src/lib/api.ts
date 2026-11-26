@@ -1180,6 +1180,8 @@ export interface FacturaPreview {
 /** Línea de factura: código, producto, OC, retail donde se vendió y monto neto */
 export interface InvoiceLine {
   orderNumber: string;
+  /** Fecha de la venta (AAAA-MM-DD) */
+  date?: string | null;
   code: string | null;
   name: string;
   oc: string;
@@ -1633,6 +1635,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ retailerCode, orderNumbers, receptor }),
     }),
+  /** Archivo de "Importar ventas electrónicas" de Nubox con las ventas elegidas de un cliente */
+  facturaLoteNuboxPreview: (retailerCode: string, orderNumbers: string[]) =>
+    request<FacturaLotePreview>('/sii/mipyme/facturas/lote/nubox/preview', { method: 'POST', body: JSON.stringify({ retailerCode, orderNumbers }) }),
+  facturaLoteNubox: async (input: { retailerCode: string; orderNumbers: string[]; receptor: FacturaReceptor; folio: number; fecha: string | null }) => {
+    const res = await fetch(`${API_URL}/sii/mipyme/facturas/lote/nubox`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) await handle(res);
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? null;
+    return { blob: await res.blob(), name };
+  },
   contribuyente: (rut: string) => request<Contribuyente>(`/sii/mipyme/contribuyente/${encodeURIComponent(rut)}`),
   facturaPreview: (retailerCode: string, orderNumber: string) =>
     request<FacturaPreview>(`/sii/mipyme/facturas/preview?retailer=${encodeURIComponent(retailerCode)}&order=${encodeURIComponent(orderNumber)}`),
@@ -1680,6 +1696,16 @@ export const api = {
       orders: { retailer: string; orderNumber: string; status: string }[];
       problems: { retailer: string; orderNumber: string; message: string }[];
     }>('/retail-api/accept', { method: 'POST', body: JSON.stringify({ orders }) }),
+  exportSales: async (keys: string[], range: { from: string; to: string }) => {
+    const res = await fetch(`${API_URL}/sales/export`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys, ...range }),
+    });
+    if (!res.ok) await handle(res);
+    return res.blob();
+  },
   retailLabels: async (orders: { retailerCode: string; orderNumber: string }[], pack: boolean) => {
     const res = await fetch(`${API_URL}/retail-api/labels`, {
       method: 'POST',

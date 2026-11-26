@@ -1,8 +1,9 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, StreamableFile } from '@nestjs/common';
 import { z } from 'zod';
 import { CurrentUser, Roles, type SessionUser } from '../auth/decorators.js';
 import { validate } from '../products/catalog.validation.js';
 import { SalesService } from './sales.service.js';
+import { salesWorkbook } from './sales-export.js';
 
 /** Monto en pesos, mayor a 0: acepta 199990, "199.990" o "$199.990" */
 const amountSchema = z.union([z.number(), z.string()], { error: 'Falta el total' }).transform((value, ctx) => {
@@ -45,6 +46,28 @@ export class SalesController {
    */
   @Get()
   list(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.sales.listWithMargin(5000, this.salesRange(from, to));
+  }
+
+  @Post('export')
+  async exportSelected(@Body() body: unknown) {
+    const { keys, from, to } = validate(z.object({
+      keys: z.array(z.string().min(1)).min(1, 'Elige al menos una venta').max(5000),
+      from: z.string(),
+      to: z.string(),
+    }), body);
+    const selected = new Set(keys);
+    const rows = (await this.sales.listWithMargin(5000, this.salesRange(from, to))).filter((row) => selected.has(row.key));
+    if (rows.length !== selected.size) {
+      throw new BadRequestException('Algunas ventas seleccionadas ya no están disponibles. Actualiza la lista e intenta de nuevo.');
+    }
+    return new StreamableFile(Buffer.from(await salesWorkbook(rows)), {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: 'attachment; filename="ventas.xlsx"',
+    });
+  }
+
+  private salesRange(from?: string, to?: string) {
     const date = /^\d{4}-\d{2}-\d{2}$/;
     if ((from && !date.test(from)) || (to && !date.test(to))) throw new BadRequestException('Fecha inválida (AAAA-MM-DD)');
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
@@ -52,7 +75,7 @@ export class SalesController {
     const defaultFrom = new Date(Date.UTC(y, m - 2, 20)).toISOString().slice(0, 10);
     const range = { from: from || defaultFrom, to: to || today };
     if (range.from > range.to) throw new BadRequestException('La fecha "desde" es posterior a "hasta"');
-    return this.sales.listWithMargin(5000, range);
+    return range;
   }
 
   /** Datos del cliente de una orden, para hacer la boleta o factura en el SII */

@@ -11,6 +11,7 @@ import { showsCustomerOrderId } from '../settlements/reconciliation.service.js';
 import { PRICING_CHANNELS } from '@cuadra/shared';
 import { amount, picker, portalDoc, rutBody, type PortalDoc } from './sii-rows.js';
 import { SiiService } from './sii.service.js';
+import { nuboxSalesFile } from './nubox-file.js';
 
 const todayCL = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
 const dateCL = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(d);
@@ -18,6 +19,8 @@ const cut = (text: string, max: number) => text.replace(/\s+/g, ' ').trim().slic
 /** Línea de una factura: código, producto, OC y retail donde se vendió, y el monto neto */
 export interface InvoiceLine {
   orderNumber: string;
+  /** Fecha de la venta (AAAA-MM-DD) */
+  date?: string | null;
   code: string | null;
   name: string;
   oc: string;
@@ -438,10 +441,14 @@ export class MipymeService {
    */
   async facturaLotePreview(retailerCode: string, orderNumbers: string[]) {
     const code = retailerCode.toUpperCase();
-    const [r] = await this.db.select({ id: retailers.id, name: retailers.name }).from(retailers).where(eq(retailers.code, code));
+    const [r] = await this.db
+      .select({ id: retailers.id, name: retailers.name, legalName: retailers.legalName, taxId: retailers.taxId })
+      .from(retailers)
+      .where(eq(retailers.code, code));
     if (!r) throw new NotFoundException('El canal no existe');
     const { rows } = await this.db.execute<{
       order_number: string;
+      order_date: string | null;
       order_id: string | null;
       name: string | null;
       sku: string | null;
@@ -454,7 +461,7 @@ export class MipymeService {
       billing_activity: string | null;
       billing_address: string | null;
     }>(sql`
-      select s.order_number, s.order_id, coalesce(sn.name, s.product_name) as name,
+      select s.order_number, s.order_date::text as order_date, s.order_id, coalesce(sn.name, s.product_name) as name,
         coalesce(sn.parent_sku, s.seller_sku) as sku, s.raw->>'retailer' as origin, s.quantity,
         coalesce(s.paid_price, s.unit_price)::float8 as unit, s.amounts_include_tax as gross,
         s.billing_tax_id, s.billing_legal_name, s.billing_activity, s.billing_address
@@ -479,6 +486,7 @@ export class MipymeService {
     const ocOf = (x: { order_number: string; order_id: string | null }) => (showsCustomerOrderId(code) ? (x.order_id ?? x.order_number) : x.order_number);
     const lines: InvoiceLine[] = rows.map((x) => ({
       orderNumber: x.order_number,
+      date: x.order_date?.slice(0, 10) ?? null,
       code: (x.sku ?? '').trim().toUpperCase() || null,
       name: cut(x.name ?? 'Producto', 80),
       oc: ocOf(x),
@@ -492,7 +500,7 @@ export class MipymeService {
       const ship = await this.sales.customerData(code, n, true).then((d) => d.shippingTotal).catch(() => 0);
       const first = rows.find((x) => x.order_number === n)!;
       if (ship > 0)
-        lines.push({ orderNumber: n, code: 'DESPACHO', name: 'Despacho', oc: ocOf(first), origin: lines.find((l) => l.orderNumber === n)?.origin ?? null, quantity: 1, unitNet: Math.round(ship / 1.19), net: 0 });
+        lines.push({ orderNumber: n, date: first.order_date?.slice(0, 10) ?? null, code: 'DESPACHO', name: 'Despacho', oc: ocOf(first), origin: lines.find((l) => l.orderNumber === n)?.origin ?? null, quantity: 1, unitNet: Math.round(ship / 1.19), net: 0 });
     }
     lines.sort((a, b) => a.orderNumber.localeCompare(b.orderNumber) || Number(a.code === 'DESPACHO') - Number(b.code === 'DESPACHO'));
     for (const l of lines) l.net = (l.unitNet ?? 0) * l.quantity;
@@ -509,9 +517,11 @@ export class MipymeService {
       .orderBy(sql`${customerReceipts.createdAt} desc`)
       .limit(1);
     const b = rows[0];
+    // Cliente de Cuadra (CLI-…): la factura va a esa empresa (ej. Jamaroff), con su RUT y razón social
+    const isClient = code.startsWith('CLI-');
     const base = (last?.receptor as FacturaReceptor | null) ?? {
-      rut: siiRut(b?.billing_tax_id) ?? '',
-      name: (b?.billing_legal_name ?? '').trim(),
+      rut: siiRut(b?.billing_tax_id) ?? (isClient ? siiRut(r.taxId) : null) ?? '',
+      name: (b?.billing_legal_name ?? '').trim() || (isClient ? (r.legalName ?? r.name ?? '').trim() : ''),
       activity: (b?.billing_activity ?? '').trim(),
       address: (b?.billing_address ?? '').trim(),
       commune: '',
@@ -531,6 +541,21 @@ export class MipymeService {
       providerName: status.providerName,
       problems,
     };
+  }
+
+  /**
+   * Las mismas líneas de la factura de varias ventas, en el archivo de "Importar ventas" de Nubox.
+   * No emite nada: la factura se crea al subir el archivo en Nubox.
+   */
+  async facturaLoteNubox(retailerCode: string, orderNumbers: string[], receptor: FacturaReceptor, opts: { folio: number; fecha: string | null }) {
+    const p = await this.facturaLotePreview(retailerCode, orderNumbers);
+    const noPrice = p.lines.filter((l) => !l.unitNet);
+    if (noPrice.length) throw new BadRequestException(`Sin precio: ${[...new Set(noPrice.map((l) => l.name))].slice(0, 3).join(', ')} (ponlo en Productos)`);
+    if (!p.lines.length) throw new BadRequestException('Las ventas elegidas no tienen productos (¿canceladas?)');
+    const rut = siiRut(receptor.rut);
+    if (!rut) throw new BadRequestException('RUT del receptor inválido');
+    const file = nuboxSalesFile({ lines: p.lines, receptor: { ...receptor, rut }, client: p.client, folio: opts.folio, fecha: opts.fecha });
+    return { ...file, client: p.client };
   }
 
   /**
