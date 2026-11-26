@@ -24,11 +24,9 @@ function cell(v: string | number | null | undefined, max = 0) {
   return s;
 }
 
-/** "Sofá Torino Gris - OC 3254000013 - Falabella - Jamaroff" (el nombre se acorta si no cabe) */
-export function nuboxDescription(l: InvoiceLine, client: string, max = 80) {
-  const tail = [`OC ${l.oc}`, l.origin, client].filter(Boolean).join(' - ');
-  const room = Math.max(10, max - tail.length - 3);
-  return cell(`${cell(l.name, room)} - ${tail}`, max);
+/** Descripción de la línea: la orden de compra y el retail donde se vendió ("OC 3254000013 - Falabella") */
+export function nuboxDescription(l: InvoiceLine, max = 100) {
+  return cell([`OC ${l.oc}`, l.origin].filter(Boolean).join(' - '), max);
 }
 
 const ddmmyyyy = (iso: string) => iso.split('-').reverse().join('/');
@@ -76,8 +74,9 @@ export function nuboxSalesFile(opts: {
           cell(r.commune, 20),
           cell(r.address, 70),
           'SI',
-          cell(l.code ?? '', 35),
-          nuboxDescription(l, opts.client),
+          // PRODUCTO: el nombre del producto (máx. 80, como el nombre del ítem en el SII)
+          cell(l.name, 80),
+          nuboxDescription(l),
           l.quantity,
           l.unitNet ?? 0,
           0,

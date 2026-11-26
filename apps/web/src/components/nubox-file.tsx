@@ -125,7 +125,7 @@ export function NuboxFile({ sales, onClose }: { sales: SaleRow[]; onClose: () =>
     <Modal
       wide
       title={p ? `Archivo Nubox: factura a ${p.client}` : 'Archivo Nubox'}
-      intro={`${orderNumbers.length} ${orderNumbers.length === 1 ? 'venta' : 'ventas'}: una factura por día y retail. Cada línea lleva el producto, la OC, el retail y ${p?.client ?? 'el cliente'}.`}
+      intro={`${orderNumbers.length} ${orderNumbers.length === 1 ? 'venta' : 'ventas'}: una factura por día y retail. Cada línea lleva el producto y, en la descripción, la OC y el retail.`}
       onClose={onClose}
       footer={
         <>
