@@ -1,13 +1,15 @@
 'use client';
 
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Download, Search } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api, type FacturaReceptor, type InvoiceLine, type SaleRow } from '@/lib/api';
 import { InvoicePreview } from './invoice-preview';
 import { Button, clp, ErrorBox, Loading, Modal } from './ui';
 
 const FOLIO_KEY = 'cuadra:nubox-folio';
+/** Datos del cliente escritos a mano, por cliente (no se consultan al SII) */
+const receptorKey = (code: string) => `cuadra:nubox-receptor:${code}`;
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
 const dmy = (iso: string) => iso.split('-').reverse().join('/');
 
@@ -41,8 +43,18 @@ export function NuboxFile({ sales, onClose }: { sales: SaleRow[]; onClose: () =>
   });
   const [receptor, setReceptor] = useState<FacturaReceptor | null>(null);
   useEffect(() => {
-    if (preview.data && !receptor) setReceptor(preview.data.receptor);
-  }, [preview.data, receptor]);
+    if (!preview.data || receptor) return;
+    // Lo último que escribiste para este cliente; lo que falte, de la venta
+    let saved: Partial<FacturaReceptor> = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(receptorKey(retailerCode)) ?? '{}') ?? {};
+    } catch {
+      /* sin datos guardados */
+    }
+    const base = preview.data.receptor;
+    const pick = (k: keyof FacturaReceptor) => (typeof saved[k] === 'string' && saved[k]!.trim() ? saved[k]! : base[k]);
+    setReceptor({ rut: pick('rut'), name: pick('name'), activity: pick('activity'), address: pick('address'), commune: pick('commune') });
+  }, [preview.data, receptor, retailerCode]);
   // Por defecto cada factura lleva la fecha de sus ventas; se puede poner una sola fecha para todas
   const [sameDate, setSameDate] = useState(false);
   const [fecha, setFecha] = useState(today);
@@ -55,17 +67,6 @@ export function NuboxFile({ sales, onClose }: { sales: SaleRow[]; onClose: () =>
     }
   });
 
-  const lookup = useMutation({
-    mutationFn: () => api.contribuyente(receptor!.rut),
-    onSuccess: (c) =>
-      setReceptor((r) => ({
-        ...r!,
-        name: c.razonSocial ?? r!.name,
-        activity: r!.activity || (c.actividades[0]?.glosa ?? ''),
-        address: r!.address || (c.direcciones[0]?.direccion ?? ''),
-        commune: r!.commune || (c.direcciones[0]?.comuna ?? ''),
-      })),
-  });
 
   const p = preview.data;
   const groups = useMemo(() => groupsOf(p?.lines ?? []), [p]);
@@ -87,6 +88,7 @@ export function NuboxFile({ sales, onClose }: { sales: SaleRow[]; onClose: () =>
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       try {
         localStorage.setItem(FOLIO_KEY, String(Number(folio) + invoices));
+        localStorage.setItem(receptorKey(retailerCode), JSON.stringify(receptor));
       } catch {
         /* sin recordar el folio */
       }
@@ -224,16 +226,10 @@ export function NuboxFile({ sales, onClose }: { sales: SaleRow[]; onClose: () =>
           </div>
 
           <InvoicePreview receptor={receptor} lines={p.lines} net={p.net} vat={p.vat} total={p.total} onReceptor={set} disabled={download.isPending} />
-          {receptor.rut && (!receptor.name || !receptor.activity) && (
-            <Button variant="secondary" size="sm" onClick={() => lookup.mutate()} loading={lookup.isPending}>
-              <Search className="size-4" /> Traer razón social y giro del SII
-            </Button>
-          )}
-          {missing.length > 0 && <p className="text-xs text-sun-700">Completa los datos del cliente para armar el archivo.</p>}
+          {missing.length > 0 && <p className="text-xs text-sun-700">Escribe los datos del cliente que faltan: Cuadra los recuerda para la próxima vez.</p>}
           <p className="text-xs text-muted">
             Precios netos por unidad, como pide Nubox; Nubox suma el IVA ({clp(p.vat)}). Total {clp(p.total)}.
           </p>
-          <ErrorBox error={lookup.error} />
           <ErrorBox error={download.error} />
         </>
       ) : (

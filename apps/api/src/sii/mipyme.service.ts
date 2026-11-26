@@ -304,7 +304,8 @@ export class MipymeService {
    *  1. los datos de la última factura hecha a ese RUT (Cuadra los recuerda)
    *  2. razón social y giro según el SII
    */
-  async completeReceptor(r: FacturaReceptor): Promise<FacturaReceptor> {
+  /** Completa el receptor con su última factura y, si sii = true, con los datos del SII */
+  async completeReceptor(r: FacturaReceptor, sii = true): Promise<FacturaReceptor> {
     const out = { ...r };
     const blank = (k: keyof FacturaReceptor) => !out[k]?.trim();
     const rut = siiRut(out.rut);
@@ -319,7 +320,7 @@ export class MipymeService {
       const k = last?.receptor as FacturaReceptor | null;
       if (k) for (const f of ['name', 'activity', 'address', 'commune'] as const) if (blank(f) && k[f]) out[f] = k[f];
     }
-    if (blank('name') || blank('activity')) {
+    if (sii && (blank('name') || blank('activity'))) {
       const c = await this.contribuyenteData(rut).catch(() => null);
       if (c) {
         if (blank('name') && c.razonSocial) out.name = cut(c.razonSocial, 100);
@@ -439,7 +440,7 @@ export class MipymeService {
    * Lo que llevaría una factura de varias órdenes del mismo cliente: una línea por producto con
    * su nombre y OC, cantidad y precio unitario neto. Avisa lo que impide emitirla.
    */
-  async facturaLotePreview(retailerCode: string, orderNumbers: string[]) {
+  async facturaLotePreview(retailerCode: string, orderNumbers: string[], opts: { sii?: boolean } = {}) {
     const code = retailerCode.toUpperCase();
     const [r] = await this.db
       .select({ id: retailers.id, name: retailers.name, legalName: retailers.legalName, taxId: retailers.taxId })
@@ -526,7 +527,8 @@ export class MipymeService {
       address: (b?.billing_address ?? '').trim(),
       commune: '',
     };
-    const receptor = await this.completeReceptor(base);
+    // Archivo Nubox: sin consultar el SII (los datos del cliente se escriben a mano)
+    const receptor = await this.completeReceptor(base, opts.sii !== false);
     const status = await this.provider.status();
     return {
       retailerCode: code,
@@ -548,7 +550,7 @@ export class MipymeService {
    * No emite nada: la factura se crea al subir el archivo en Nubox.
    */
   async facturaLoteNubox(retailerCode: string, orderNumbers: string[], receptor: FacturaReceptor, opts: { folio: number; fecha: string | null }) {
-    const p = await this.facturaLotePreview(retailerCode, orderNumbers);
+    const p = await this.facturaLotePreview(retailerCode, orderNumbers, { sii: false });
     const noPrice = p.lines.filter((l) => !l.unitNet);
     if (noPrice.length) throw new BadRequestException(`Sin precio: ${[...new Set(noPrice.map((l) => l.name))].slice(0, 3).join(', ')} (ponlo en Productos)`);
     if (!p.lines.length) throw new BadRequestException('Las ventas elegidas no tienen productos (¿canceladas?)');

@@ -54,7 +54,11 @@ export function InvoicePreview({
                     {edit ? (
                       <input
                         value={receptor[f.key] ?? ''}
-                        onChange={(e) => onReceptor!(f.key, e.target.value)}
+                        onChange={(e) => {
+                          // Al escribir, los campos siguen editables (si no, se cierran apenas dejan de estar vacíos)
+                          setEditing(true);
+                          onReceptor!(f.key, e.target.value);
+                        }}
                         disabled={disabled}
                         maxLength={f.max}
                         placeholder={empty ? `Falta ${f.label.toLowerCase()}` : undefined}

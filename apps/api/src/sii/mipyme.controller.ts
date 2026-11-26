@@ -123,7 +123,7 @@ export class MipymeController {
   @HttpCode(200)
   facturaLoteNuboxPreview(@Body() body: unknown) {
     const input = validate(nuboxSchema.omit({ receptor: true, folio: true, fecha: true }), body);
-    return this.mipyme.facturaLotePreview(input.retailerCode, input.orderNumbers);
+    return this.mipyme.facturaLotePreview(input.retailerCode, input.orderNumbers, { sii: false });
   }
 
   /** Las mismas líneas en el archivo de "Importar ventas electrónicas" de Nubox: una factura por día y retail (no emite nada) */
